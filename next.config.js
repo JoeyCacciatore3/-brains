@@ -4,6 +4,8 @@ const nextConfig = {
   images: {
     remotePatterns: [],
   },
+  // Add empty turbopack config to silence Next.js 16 warning
+  turbopack: {},
   // Exclude server-only packages from client bundle
   webpack: (config, { isServer }) => {
     if (!isServer) {

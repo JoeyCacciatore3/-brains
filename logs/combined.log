@@ -55,3 +55,9 @@
 {"level":"info","message":"Database initialized successfully","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 13:17:46"}
 {"attempt":1,"level":"info","message":"Database connection established","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 13:39:47"}
 {"level":"info","message":"Database initialized successfully","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 13:39:47"}
+{"level":"warn","message":"No OAuth providers configured. Authentication will be disabled.","service":"ai-dialogue-platform","timestamp":"2025-11-21 23:13:16"}
+{"level":"warn","message":"No OAuth providers configured. Authentication will be disabled.","service":"ai-dialogue-platform","timestamp":"2025-11-21 23:13:16"}
+{"level":"warn","message":"No OAuth providers configured. Authentication will be disabled.","service":"ai-dialogue-platform","timestamp":"2025-11-21 23:15:37"}
+{"level":"warn","message":"No OAuth providers configured. Authentication will be disabled.","service":"ai-dialogue-platform","timestamp":"2025-11-21 23:15:37"}
+{"level":"warn","message":"No OAuth providers configured. Authentication will be disabled.","service":"ai-dialogue-platform","timestamp":"2025-11-21 23:23:12"}
+{"level":"warn","message":"No OAuth providers configured. Authentication will be disabled.","service":"ai-dialogue-platform","timestamp":"2025-11-21 23:23:12"}
