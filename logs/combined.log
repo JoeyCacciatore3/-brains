@@ -1,0 +1,57 @@
+{"attempt":1,"error":{"code":"SQLITE_ERROR"},"level":"warn","message":"Database connection attempt 1 failed","service":"ai-dialogue-platform","timestamp":"2025-11-20 09:39:07"}
+{"level":"info","message":"Retrying database connection in 1000ms...","service":"ai-dialogue-platform","timestamp":"2025-11-20 09:39:07"}
+{"attempt":2,"error":{"code":"SQLITE_ERROR"},"level":"warn","message":"Database connection attempt 2 failed","service":"ai-dialogue-platform","timestamp":"2025-11-20 09:39:07"}
+{"level":"info","message":"Retrying database connection in 2000ms...","service":"ai-dialogue-platform","timestamp":"2025-11-20 09:39:07"}
+{"attempt":3,"error":{"code":"SQLITE_ERROR"},"level":"warn","message":"Database connection attempt 3 failed","service":"ai-dialogue-platform","timestamp":"2025-11-20 09:39:07"}
+{"error":{"code":"SQLITE_ERROR"},"level":"error","maxRetries":3,"message":"Failed to create database connection after all retries","service":"ai-dialogue-platform","timestamp":"2025-11-20 09:39:07"}
+{"error":{"code":"SQLITE_ERROR"},"level":"error","message":"Failed to initialize database","service":"ai-dialogue-platform","timestamp":"2025-11-20 09:39:07"}
+{"error":{"code":"SQLITE_ERROR"},"level":"error","message":"Database initialization failed during health check","service":"ai-dialogue-platform","timestamp":"2025-11-20 09:39:07"}
+{"error":{"description":"Route /api/discussions couldn't be rendered statically because it used `headers`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error","digest":"DYNAMIC_SERVER_USAGE"},"level":"error","message":"Error fetching discussions:","service":"ai-dialogue-platform","timestamp":"2025-11-20 20:24:07"}
+{"attempt":1,"level":"info","message":"Database connection established","path":"/home/joey/Desktop/@brains/data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-20 20:24:07"}
+{"level":"info","message":"Database initialized successfully","path":"/home/joey/Desktop/@brains/data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-20 20:24:07"}
+{"error":{"description":"Route /api/discussions couldn't be rendered statically because it used `headers`. See more info here: https://nextjs.org/docs/messages/dynamic-server-error","digest":"DYNAMIC_SERVER_USAGE"},"level":"error","message":"Error fetching discussions:","service":"ai-dialogue-platform","timestamp":"2025-11-20 20:24:52"}
+{"attempt":1,"level":"info","message":"Database connection established","path":"/home/joey/Desktop/@brains/data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-20 20:24:52"}
+{"level":"info","message":"Database initialized successfully","path":"/home/joey/Desktop/@brains/data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-20 20:24:52"}
+{"attempt":1,"level":"info","message":"Database connection established","path":"/home/joey/Desktop/@brains/data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-20 20:36:40"}
+{"level":"info","message":"Database initialized successfully","path":"/home/joey/Desktop/@brains/data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-20 20:36:40"}
+{"attempt":1,"level":"info","message":"Database connection established","path":"/home/joey/Desktop/@brains/data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-20 20:57:58"}
+{"level":"info","message":"Database initialized successfully","path":"/home/joey/Desktop/@brains/data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-20 20:57:58"}
+{"attempt":1,"level":"info","message":"Database connection established","path":"/home/joey/Desktop/@brains/data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-20 21:02:16"}
+{"level":"info","message":"Database initialized successfully","path":"/home/joey/Desktop/@brains/data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-20 21:02:16"}
+{"level":"warn","message":"Stale WAL file detected, attempting cleanup","service":"ai-dialogue-platform","timestamp":"2025-11-20 21:30:21","walPath":"/home/joey/Desktop/@brains/data/conversations.db-wal"}
+{"level":"info","message":"Removed stale WAL file","service":"ai-dialogue-platform","timestamp":"2025-11-20 21:30:21","walPath":"/home/joey/Desktop/@brains/data/conversations.db-wal"}
+{"level":"info","message":"Removed stale SHM file","service":"ai-dialogue-platform","shmPath":"/home/joey/Desktop/@brains/data/conversations.db-shm","timestamp":"2025-11-20 21:30:21"}
+{"attempt":1,"level":"info","message":"Database connection established","path":"/home/joey/Desktop/@brains/data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-20 21:30:21"}
+{"level":"info","message":"Database initialized successfully","path":"/home/joey/Desktop/@brains/data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-20 21:30:21"}
+{"attempt":1,"level":"info","message":"Database connection established","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 00:16:54"}
+{"level":"info","message":"Database initialized successfully","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 00:16:54"}
+{"level":"warn","message":"Stale WAL file detected, attempting cleanup","service":"ai-dialogue-platform","timestamp":"2025-11-21 11:54:02","walPath":"data/conversations.db-wal"}
+{"level":"info","message":"Removed stale WAL file","service":"ai-dialogue-platform","timestamp":"2025-11-21 11:54:02","walPath":"data/conversations.db-wal"}
+{"level":"info","message":"Removed stale SHM file","service":"ai-dialogue-platform","shmPath":"data/conversations.db-shm","timestamp":"2025-11-21 11:54:02"}
+{"attempt":1,"level":"info","message":"Database connection established","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 11:54:02"}
+{"level":"info","message":"Database initialized successfully","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 11:54:02"}
+{"level":"warn","message":"Stale WAL file detected, attempting cleanup","service":"ai-dialogue-platform","timestamp":"2025-11-21 12:25:33","walPath":"data/conversations.db-wal"}
+{"level":"info","message":"Removed stale WAL file","service":"ai-dialogue-platform","timestamp":"2025-11-21 12:25:33","walPath":"data/conversations.db-wal"}
+{"level":"info","message":"Removed stale SHM file","service":"ai-dialogue-platform","shmPath":"data/conversations.db-shm","timestamp":"2025-11-21 12:25:33"}
+{"attempt":1,"level":"info","message":"Database connection established","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 12:25:33"}
+{"level":"info","message":"Database initialized successfully","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 12:25:33"}
+{"attempt":1,"level":"info","message":"Database connection established","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 12:26:25"}
+{"level":"info","message":"Database initialized successfully","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 12:26:25"}
+{"attempt":1,"level":"info","message":"Database connection established","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 12:29:44"}
+{"level":"info","message":"Database initialized successfully","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 12:29:44"}
+{"attempt":1,"level":"info","message":"Database connection established","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 12:30:00"}
+{"level":"info","message":"Database initialized successfully","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 12:30:00"}
+{"level":"warn","message":"Stale WAL file detected, attempting cleanup","service":"ai-dialogue-platform","timestamp":"2025-11-21 12:36:49","walPath":"data/conversations.db-wal"}
+{"level":"info","message":"Removed stale WAL file","service":"ai-dialogue-platform","timestamp":"2025-11-21 12:36:49","walPath":"data/conversations.db-wal"}
+{"level":"info","message":"Removed stale SHM file","service":"ai-dialogue-platform","shmPath":"data/conversations.db-shm","timestamp":"2025-11-21 12:36:49"}
+{"attempt":1,"level":"info","message":"Database connection established","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 12:36:49"}
+{"level":"info","message":"Database initialized successfully","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 12:36:49"}
+{"level":"warn","message":"Stale WAL file detected, attempting cleanup","service":"ai-dialogue-platform","timestamp":"2025-11-21 13:15:38","walPath":"data/conversations.db-wal"}
+{"level":"info","message":"Removed stale WAL file","service":"ai-dialogue-platform","timestamp":"2025-11-21 13:15:38","walPath":"data/conversations.db-wal"}
+{"level":"info","message":"Removed stale SHM file","service":"ai-dialogue-platform","shmPath":"data/conversations.db-shm","timestamp":"2025-11-21 13:15:38"}
+{"attempt":1,"level":"info","message":"Database connection established","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 13:15:38"}
+{"level":"info","message":"Database initialized successfully","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 13:15:38"}
+{"attempt":1,"level":"info","message":"Database connection established","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 13:17:46"}
+{"level":"info","message":"Database initialized successfully","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 13:17:46"}
+{"attempt":1,"level":"info","message":"Database connection established","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 13:39:47"}
+{"level":"info","message":"Database initialized successfully","path":"data/conversations.db","service":"ai-dialogue-platform","timestamp":"2025-11-21 13:39:47"}
