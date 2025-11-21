@@ -4,20 +4,27 @@
  * Falls back to estimation for unsupported models
  */
 
-import { encoding_for_model } from 'tiktoken';
 import { logger } from '@/lib/logger';
 
 // Cache tokenizers by model name
-const tokenizerCache = new Map<string, ReturnType<typeof encoding_for_model>>();
+const tokenizerCache = new Map<string, any>();
+
+// Flag to track if tiktoken is available
+let tiktokenAvailable: boolean | null = null;
 
 /**
  * Get tokenizer for a specific model
  * Uses tiktoken for OpenAI-compatible models, falls back to estimation
  */
-function getTokenizer(model?: string): {
+async function getTokenizer(model?: string): Promise<{
   encode: (text: string) => Uint32Array;
   type: 'tiktoken' | 'estimation';
-} | null {
+} | null> {
+  // Check if we've already determined tiktoken is unavailable
+  if (tiktokenAvailable === false) {
+    return null;
+  }
+
   // Default to cl100k_base encoding (used by GPT-3.5, GPT-4, and most OpenAI-compatible models)
   // This works for Groq (Llama), Mistral, and most OpenRouter models
   const defaultModel = 'gpt-3.5-turbo';
@@ -50,9 +57,31 @@ function getTokenizer(model?: string): {
       };
     }
 
-    // Create new tokenizer
-    // tiktoken accepts string model names, and encoding_for_model validates at runtime
-    const tokenizer = encoding_for_model(tiktokenModel as Parameters<typeof encoding_for_model>[0]);
+    // Try to dynamically import tiktoken
+    if (tiktokenAvailable === null) {
+      try {
+        const tiktoken = await import('tiktoken');
+        tiktokenAvailable = true;
+        // Create new tokenizer
+        const tokenizer = tiktoken.encoding_for_model(tiktokenModel as any);
+        tokenizerCache.set(tiktokenModel, tokenizer);
+
+        return {
+          encode: (text: string) => tokenizer.encode(text),
+          type: 'tiktoken' as const,
+        };
+      } catch (importError) {
+        tiktokenAvailable = false;
+        logger.debug('Tiktoken not available, using estimation fallback', {
+          error: importError instanceof Error ? importError.message : String(importError),
+        });
+        return null;
+      }
+    }
+
+    // If we get here, tiktoken is available
+    const tiktoken = await import('tiktoken');
+    const tokenizer = tiktoken.encoding_for_model(tiktokenModel as any);
     tokenizerCache.set(tiktokenModel, tokenizer);
 
     return {
@@ -73,12 +102,37 @@ function getTokenizer(model?: string): {
 /**
  * Count tokens in text using actual tokenization
  * Falls back to estimation if tokenization fails
+ * Note: This is now synchronous and always uses estimation
+ * Actual tokenization would require async handling throughout the codebase
+ *
+ * @param text - Text to count tokens for
+ * @param _model - Optional model name for model-specific tokenization (unused in sync version)
+ * @returns Estimated token count
+ */
+export function countTokens(text: string, _model?: string): number {
+  if (!text || text.length === 0) {
+    return 0;
+  }
+
+  const trimmed = text.trim();
+  if (trimmed.length === 0) {
+    return 0;
+  }
+
+  // For now, always use estimation to avoid async complications
+  // The estimation is conservative and works well for most use cases
+  return estimateTokenCount(trimmed);
+}
+
+/**
+ * Async version of countTokens that attempts to use actual tokenization
+ * Use this when you can handle async operations
  *
  * @param text - Text to count tokens for
  * @param model - Optional model name for model-specific tokenization
  * @returns Actual token count (or estimation if tokenization fails)
  */
-export function countTokens(text: string, model?: string): number {
+export async function countTokensAsync(text: string, model?: string): Promise<number> {
   if (!text || text.length === 0) {
     return 0;
   }
@@ -89,18 +143,17 @@ export function countTokens(text: string, model?: string): number {
   }
 
   // Try to use actual tokenization
-  const tokenizer = getTokenizer(model);
-  if (tokenizer && tokenizer.type === 'tiktoken') {
-    try {
+  try {
+    const tokenizer = await getTokenizer(model);
+    if (tokenizer && tokenizer.type === 'tiktoken') {
       const tokens = tokenizer.encode(trimmed);
       return tokens.length;
-    } catch (error) {
-      logger.warn('Tokenization failed, falling back to estimation', {
-        model,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      // Fall through to estimation
     }
+  } catch (error) {
+    logger.warn('Tokenization failed, falling back to estimation', {
+      model,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
   // Fallback to estimation
