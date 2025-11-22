@@ -17,11 +17,12 @@ const nextConfig = {
         tls: false,
         jsdom: false,
       };
-      // Exclude server-only packages from client bundle
+      // Exclude server-only packages from client bundle (but NOT jsdom - it's needed by isomorphic-dompurify on server)
       const externals = Array.isArray(config.externals) ? config.externals : [];
-      config.externals = [...externals, 'pdf-parse', 'jsdom', 'open'];
+      config.externals = [...externals, 'pdf-parse', 'open'];
     }
-    // Server-side: no special handling needed
+    // Server-side: jsdom must be available for isomorphic-dompurify during SSR
+    // No special handling needed - jsdom should be bundled normally on server
     return config;
   },
   async headers() {

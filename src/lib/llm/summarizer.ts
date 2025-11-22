@@ -7,6 +7,7 @@ import {
   addSummaryToDiscussion,
 } from '@/lib/discussions/file-manager';
 import { updateDiscussion } from '@/lib/db/discussions';
+import { LLM_CONFIG } from '@/lib/config';
 import type { LLMMessage } from './types';
 import type { SummaryEntry, DiscussionRound } from '@/types';
 
@@ -30,7 +31,10 @@ export async function generateSummary(
   const summarizerPersona = aiPersonas.summarizer;
 
   try {
-    const provider = getProviderWithFallback(summarizerPersona.provider);
+    // Use SUMMARY_MAX_TOKENS for summaries
+    const provider = getProviderWithFallback(summarizerPersona.provider, {
+      maxTokens: LLM_CONFIG.SUMMARY_MAX_TOKENS,
+    });
 
     // Format messages for summarization
     const conversationText = messages
@@ -51,7 +55,9 @@ Create a clear, structured summary that:
 4. Mentions any open questions or areas needing further exploration
 5. Preserves essential context for future reference
 
-Keep the summary concise but comprehensive enough to maintain full context awareness.`;
+Keep the summary concise but comprehensive enough to maintain full context awareness.
+
+IMPORTANT: Ensure your summary is a complete thought and ends naturally, even if you must be more concise. Always finish with proper punctuation and a complete sentence. Never cut off mid-thought - if approaching the token limit, conclude your summary naturally rather than being truncated.`;
 
     const llmMessages: LLMMessage[] = [
       { role: 'system', content: summarizerPersona.systemPrompt },
@@ -102,7 +108,10 @@ export async function generateComprehensiveSummary(
   const summarizerPersona = aiPersonas.summarizer;
 
   try {
-    const provider = getProviderWithFallback(summarizerPersona.provider);
+    // Use SUMMARY_MAX_TOKENS for summaries
+    const provider = getProviderWithFallback(summarizerPersona.provider, {
+      maxTokens: LLM_CONFIG.SUMMARY_MAX_TOKENS,
+    });
 
     // Calculate token count before summarization
     const tokenCountBefore = rounds.reduce((sum, round) => {
@@ -158,7 +167,9 @@ Create a clear, structured summary that:
 - Preserves the narrative flow and context
 - Includes user answers to questions if provided
 
-The summary will replace the detailed rounds in future context, so it MUST be comprehensive enough to maintain full context awareness while being significantly more concise. Write 3-6 paragraphs that capture the essence while preserving all critical information.`;
+The summary will replace the detailed rounds in future context, so it MUST be comprehensive enough to maintain full context awareness while being significantly more concise. Write 3-6 paragraphs that capture the essence while preserving all critical information.
+
+IMPORTANT: Ensure your summary is a complete thought and ends naturally, even if you must be more concise. Always finish with proper punctuation and a complete sentence. Never cut off mid-thought - if approaching the token limit, conclude your summary naturally rather than being truncated.`;
 
     const llmMessages: LLMMessage[] = [
       { role: 'system', content: summarizerPersona.systemPrompt },

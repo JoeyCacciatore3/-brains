@@ -13,6 +13,18 @@ const CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // Run every 10 minutes
 
 /**
  * Clean up orphaned temp files
+ * Alias for cleanupTempFiles for consistency with plan
+ */
+export async function cleanupOrphanedTempFiles(): Promise<{
+  cleaned: number;
+  errors: number;
+  totalSize: number;
+}> {
+  return cleanupTempFiles();
+}
+
+/**
+ * Clean up orphaned temp files
  */
 export async function cleanupTempFiles(): Promise<{
   cleaned: number;

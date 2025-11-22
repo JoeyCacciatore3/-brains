@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { ChevronDown, ChevronUp, FileText, HelpCircle, Copy, Clock } from 'lucide-react';
+import toast from 'react-hot-toast';
 import type { DiscussionRound, SummaryEntry } from '@/types';
 import { RoundDisplay } from './RoundDisplay';
 import { Button } from '@/lib/components/ui/Button';
@@ -90,11 +91,16 @@ export function RoundAccordion({
     const content = `Round ${round.roundNumber}\n\n${round.analyzerResponse.persona}: ${round.analyzerResponse.content}\n\n${round.solverResponse.persona}: ${round.solverResponse.content}\n\n${round.moderatorResponse.persona}: ${round.moderatorResponse.content}`;
     try {
       await navigator.clipboard.writeText(content);
-      // Could show a toast notification here
+      toast.success('Round content copied to clipboard!', {
+        icon: '📋',
+      });
     } catch (err) {
       clientLogger.error('Failed to copy round content to clipboard', {
         error: err instanceof Error ? err.message : String(err),
         roundNumber: round.roundNumber,
+      });
+      toast.error('Failed to copy to clipboard', {
+        icon: '❌',
       });
     }
   };

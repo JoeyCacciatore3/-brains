@@ -458,6 +458,7 @@ export function useSocket(): UseSocketReturn {
           content: '',
         });
         setWaitingForAction(false); // Clear waiting state when new message starts
+        setCurrentRound(null); // Clear current round when new round starts
         setError(null);
         return currentDiscussionId; // Keep same discussionId
       });
@@ -728,6 +729,35 @@ export function useSocket(): UseSocketReturn {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /**
+   * Helper to emit with acknowledgment and timeout
+   */
+  const emitWithAck = <T = unknown>(
+    event: string,
+    data: unknown,
+    timeoutMs: number = 5000
+  ): Promise<T> => {
+    return new Promise((resolve, reject) => {
+      if (!socket) {
+        reject(new Error('Socket not initialized'));
+        return;
+      }
+
+      const timeout = setTimeout(() => {
+        reject(new Error(`Acknowledgment timeout for event: ${event}`));
+      }, timeoutMs);
+
+      socket.emit(event, data, (response: { error?: string; data?: T } | T) => {
+        clearTimeout(timeout);
+        if (typeof response === 'object' && response !== null && 'error' in response) {
+          reject(new Error(response.error || 'Unknown error'));
+        } else {
+          resolve((typeof response === 'object' && response !== null && 'data' in response ? response.data : response) as T);
+        }
+      });
+    });
+  };
+
   const startDialogue = (topic: string, files: FileData[] = [], userId?: string) => {
     if (!socket) {
       const errorMsg = 'Socket not initialized. Please refresh the page.';
@@ -758,9 +788,23 @@ export function useSocket(): UseSocketReturn {
         userId,
         socketId: socket.id,
       });
+
+      // Emit with acknowledgment
+      emitWithAck('start-dialogue', { topic, files, userId })
+        .then(() => {
+          clientLogger.debug('Start-dialogue acknowledged by server');
+          setError(null);
+        })
+        .catch((ackError) => {
+          clientLogger.warn('Start-dialogue acknowledgment failed or timed out', {
+            error: ackError instanceof Error ? ackError.message : String(ackError),
+          });
+          // Don't set error here - let the error event handle it
+          // The server will still process the request even if ack fails
+        });
+
+      // Also emit without ack for backward compatibility (server will handle both)
       socket.emit('start-dialogue', { topic, files, userId });
-      // Clear any previous errors when starting a new dialogue
-      setError(null);
     } catch (error) {
       const errorMsg = `Failed to start dialogue: ${error instanceof Error ? error.message : 'Unknown error'}`;
       clientLogger.error('Error starting dialogue', {
@@ -798,11 +842,19 @@ export function useSocket(): UseSocketReturn {
         inputLength: input.length,
         socketId: socket.id,
       });
-      socket.emit('user-input', {
-        discussionId: discussionId,
-        input,
-      });
-      setError(null);
+
+      emitWithAck('user-input', { discussionId, input })
+        .then(() => {
+          clientLogger.debug('User-input acknowledged by server');
+          setError(null);
+        })
+        .catch((ackError) => {
+          clientLogger.warn('User-input acknowledgment failed or timed out', {
+            error: ackError instanceof Error ? ackError.message : String(ackError),
+          });
+        });
+
+      socket.emit('user-input', { discussionId, input });
     } catch (error) {
       const errorMsg = `Failed to send user input: ${error instanceof Error ? error.message : 'Unknown error'}`;
       clientLogger.error('Error sending user input', {
@@ -855,13 +907,20 @@ export function useSocket(): UseSocketReturn {
         answerCount: Object.keys(answers).length,
         socketId: socket.id,
       });
-      socket.emit('submit-answers', {
-        discussionId: discussionId,
-        roundNumber,
-        answers,
-      });
-      setCurrentQuestionSet(null); // Clear question set after submission
-      setError(null);
+
+      emitWithAck('submit-answers', { discussionId, roundNumber, answers })
+        .then(() => {
+          clientLogger.debug('Submit-answers acknowledged by server');
+          setCurrentQuestionSet(null);
+          setError(null);
+        })
+        .catch((ackError) => {
+          clientLogger.warn('Submit-answers acknowledgment failed or timed out', {
+            error: ackError instanceof Error ? ackError.message : String(ackError),
+          });
+        });
+
+      socket.emit('submit-answers', { discussionId, roundNumber, answers });
     } catch (error) {
       const errorMsg = `Failed to submit answers: ${error instanceof Error ? error.message : 'Unknown error'}`;
       clientLogger.error('Error submitting answers', {
@@ -878,9 +937,20 @@ export function useSocket(): UseSocketReturn {
       clientLogger.warn('Cannot proceed dialogue: socket or discussionId missing');
       return;
     }
+
+    emitWithAck('proceed-dialogue', { discussionId })
+      .then(() => {
+        clientLogger.debug('Proceed-dialogue acknowledged by server');
+      })
+      .catch((ackError) => {
+        clientLogger.warn('Proceed-dialogue acknowledgment failed or timed out', {
+          error: ackError instanceof Error ? ackError.message : String(ackError),
+        });
+      });
+
     // Don't clear waitingForAction here - let message-start event handle it
     // This ensures buttons remain visible until the next round actually starts processing
-    socket.emit('proceed-dialogue', { discussionId: discussionId });
+    socket.emit('proceed-dialogue', { discussionId });
   };
 
   const generateSummary = () => {
@@ -889,10 +959,18 @@ export function useSocket(): UseSocketReturn {
       return;
     }
     const roundNumber = currentRound?.roundNumber;
-    socket.emit('generate-summary', {
-      discussionId: discussionId,
-      roundNumber,
-    });
+
+    emitWithAck('generate-summary', { discussionId, roundNumber })
+      .then(() => {
+        clientLogger.debug('Generate-summary acknowledged by server');
+      })
+      .catch((ackError) => {
+        clientLogger.warn('Generate-summary acknowledgment failed or timed out', {
+          error: ackError instanceof Error ? ackError.message : String(ackError),
+        });
+      });
+
+    socket.emit('generate-summary', { discussionId, roundNumber });
   };
 
   const generateQuestions = () => {
@@ -901,10 +979,18 @@ export function useSocket(): UseSocketReturn {
       return;
     }
     const roundNumber = currentRound?.roundNumber;
-    socket.emit('generate-questions', {
-      discussionId: discussionId,
-      roundNumber,
-    });
+
+    emitWithAck('generate-questions', { discussionId, roundNumber })
+      .then(() => {
+        clientLogger.debug('Generate-questions acknowledged by server');
+      })
+      .catch((ackError) => {
+        clientLogger.warn('Generate-questions acknowledgment failed or timed out', {
+          error: ackError instanceof Error ? ackError.message : String(ackError),
+        });
+      });
+
+    socket.emit('generate-questions', { discussionId, roundNumber });
   };
 
   const reset = () => {

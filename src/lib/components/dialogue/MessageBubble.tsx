@@ -2,25 +2,12 @@
 
 import type { ConversationMessage, StreamingMode } from '@/types';
 import { cn } from '@/lib/utils';
-import DOMPurify from 'isomorphic-dompurify';
 
 interface MessageBubbleProps {
   message: ConversationMessage;
   streamingContent?: string;
   streamingMode?: StreamingMode;
   isStreaming?: boolean;
-}
-
-/**
- * Sanitize text using DOMPurify for robust XSS protection
- * DOMPurify removes all potentially dangerous HTML while preserving safe text
- * @param text - Text to sanitize
- * @returns Sanitized text safe for rendering
- */
-function sanitizeText(text: string): string {
-  // DOMPurify sanitizes HTML and prevents XSS attacks
-  // It's safe to use on both client and server (isomorphic-dompurify)
-  return DOMPurify.sanitize(text, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] });
 }
 
 export function MessageBubble({
@@ -50,9 +37,9 @@ export function MessageBubble({
   }
 
   // Handle streaming display
-  const rawContent = isStreaming && streamingContent ? streamingContent : message.content || '';
-  // Sanitize content to prevent XSS (React already escapes by default, but this adds extra protection)
-  const displayContent = sanitizeText(rawContent);
+  // React automatically escapes all text content, providing XSS protection by default
+  // No additional sanitization needed since we're not using dangerouslySetInnerHTML
+  const displayContent = isStreaming && streamingContent ? streamingContent : message.content || '';
 
   const persona = message.persona || 'Unknown';
   const turn = message.turn || 0;

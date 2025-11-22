@@ -50,7 +50,8 @@ export const FILE_CONFIG = {
  */
 export const LLM_CONFIG = {
   DEFAULT_TIMEOUT_MS: 60000, // 60 seconds
-  DEFAULT_MAX_TOKENS: 400, // Reduced for more concise responses
+  DEFAULT_MAX_TOKENS: 280, // Reduced by 30% for more concise responses
+  SUMMARY_MAX_TOKENS: 200, // Reduced by 50% for summaries
   DEFAULT_TEMPERATURE: 0.7,
 } as const;
 
@@ -76,4 +77,38 @@ export const SERVER_CONFIG = {
   HOSTNAME: process.env.HOSTNAME || 'localhost',
   PORT: parseInt(process.env.PORT || '3000', 10),
   NODE_ENV: process.env.NODE_ENV || 'development',
+} as const;
+
+/**
+ * Backup configuration
+ */
+export const BACKUP_CONFIG = {
+  ENABLED: process.env.BACKUP_ENABLED === 'true' || process.env.BACKUP_ENABLED !== 'false',
+  RETENTION_DAYS: parseInt(process.env.BACKUP_RETENTION_DAYS || '30', 10),
+  INTERVAL_HOURS: parseInt(process.env.BACKUP_INTERVAL_HOURS || '1', 10),
+} as const;
+
+/**
+ * Session configuration
+ */
+export const SESSION_CONFIG = {
+  TIMEOUT_MINUTES: parseInt(process.env.SESSION_TIMEOUT_MINUTES || '1440', 10),
+} as const;
+
+/**
+ * LLM timeout configuration (per provider)
+ */
+export const LLM_TIMEOUT_CONFIG = {
+  GROQ: parseInt(process.env.LLM_TIMEOUT_GROQ || '60000', 10),
+  MISTRAL: parseInt(process.env.LLM_TIMEOUT_MISTRAL || '90000', 10),
+  OPENROUTER: parseInt(process.env.LLM_TIMEOUT_OPENROUTER || '120000', 10),
+} as const;
+
+/**
+ * Security configuration
+ */
+export const SECURITY_CONFIG = {
+  ENABLE_VIRUS_SCAN: process.env.ENABLE_VIRUS_SCAN === 'true',
+  CLAMAV_HOST: process.env.CLAMAV_HOST || 'localhost',
+  CLAMAV_PORT: parseInt(process.env.CLAMAV_PORT || '3310', 10),
 } as const;

@@ -221,6 +221,17 @@ The application uses a **round-based discussion system** where:
 
 **Server Action:** Creates new discussion, starts round processing
 
+**Acknowledgments:** Yes - Server sends acknowledgment after discussion is created (before async processing starts)
+
+**Acknowledgment Response:**
+
+```typescript
+{
+  data?: { discussionId: string; hasActiveDiscussion: boolean };
+  error?: string;
+}
+```
+
 ---
 
 ### `user-input`
@@ -237,6 +248,17 @@ The application uses a **round-based discussion system** where:
 ```
 
 **Server Action:** Appends user message, continues dialogue processing
+
+**Acknowledgments:** Yes - Server sends acknowledgment after user input is saved (before async processing starts)
+
+**Acknowledgment Response:**
+
+```typescript
+{
+  data?: { discussionId: string };
+  error?: string;
+}
+```
 
 ---
 
@@ -256,6 +278,17 @@ The application uses a **round-based discussion system** where:
 
 **Server Action:** Updates round answers, continues dialogue
 
+**Acknowledgments:** Yes - Server sends acknowledgment after answers are saved
+
+**Acknowledgment Response:**
+
+```typescript
+{
+  data?: { discussionId: string; roundNumber: number };
+  error?: string;
+}
+```
+
 ---
 
 ### `proceed-dialogue`
@@ -271,6 +304,17 @@ The application uses a **round-based discussion system** where:
 ```
 
 **Server Action:** Continues to next round
+
+**Acknowledgments:** Yes - Server sends acknowledgment before starting async processing
+
+**Acknowledgment Response:**
+
+```typescript
+{
+  data?: { discussionId: string };
+  error?: string;
+}
+```
 
 ---
 
@@ -289,6 +333,17 @@ The application uses a **round-based discussion system** where:
 
 **Server Action:** Generates summary for specified rounds
 
+**Acknowledgments:** Yes - Server sends acknowledgment after summary is generated
+
+**Acknowledgment Response:**
+
+```typescript
+{
+  data?: { discussionId: string; summary: SummaryEntry };
+  error?: string;
+}
+```
+
 ---
 
 ### `generate-questions`
@@ -305,6 +360,17 @@ The application uses a **round-based discussion system** where:
 ```
 
 **Server Action:** Generates questions for specified round
+
+**Acknowledgments:** Yes - Server sends acknowledgment after questions are generated
+
+**Acknowledgment Response:**
+
+```typescript
+{
+  data?: { discussionId: string; questionSet: QuestionSet; roundNumber: number };
+  error?: string;
+}
+```
 
 ---
 
@@ -331,7 +397,42 @@ The application uses a **round-based discussion system** where:
 ### Action State
 
 - **`waitingForAction: boolean`** - Set to true when `round-complete` is received
-- **`needsUserInput: boolean`** - Currently unused (handler exists but server doesn't emit `needs-user-input`)
+
+---
+
+## Acknowledgments
+
+All critical client events support Socket.IO acknowledgments for delivery confirmation:
+
+**Events with Acknowledgments:**
+
+- `start-dialogue`
+- `user-input`
+- `submit-answers`
+- `proceed-dialogue`
+- `generate-summary`
+- `generate-questions`
+
+**Client Implementation:**
+
+- Uses `emitWithAck()` helper function
+- Implements 5-second timeout (default)
+- Logs acknowledgment failures but doesn't block operations
+- Server still processes requests even if acknowledgment fails
+
+**Server Implementation:**
+
+- Sends acknowledgment after successful validation
+- For async operations, sends acknowledgment before processing starts
+- Sends error in acknowledgment if validation fails
+- Acknowledgment format: `{ data?: T, error?: string }`
+
+**Benefits:**
+
+- Delivery confirmation for critical operations
+- Better error detection and handling
+- Improved debugging capabilities
+- Timeout handling prevents indefinite waiting
 
 ---
 
@@ -373,11 +474,11 @@ Client: Sets waitingForAction = true
 
 ## Deprecated Events
 
-### `needs-user-input` ❌
+### `needs-user-input` ❌ DEPRECATED
 
-- **Status:** Handler exists but server never emits this event
+- **Status:** Fully deprecated - handler removed, event never emitted
 - **Replacement:** System uses `waitingForAction` state from `round-complete` event
-- **Note:** Handler kept for potential future use
+- **Removed:** Handler and all references have been removed from the codebase
 
 **Note:** The `conversation-started` event has been removed. Use `discussion-started` instead.
 

@@ -106,7 +106,9 @@ export const authOptions: NextAuthConfig = {
   pages: {
     signIn: '/auth/signin',
   },
-  secret: process.env.NEXTAUTH_SECRET,
+  // Secret is required for NextAuth v5
+  // Provide a fallback for development when no OAuth providers are configured
+  secret: process.env.NEXTAUTH_SECRET || 'development-secret-change-in-production',
 };
 
 // Export auth function for NextAuth v5

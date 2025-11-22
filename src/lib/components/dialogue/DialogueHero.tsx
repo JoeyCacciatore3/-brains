@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Brain, MessageSquare, ChevronDown, ChevronUp, X, FileText, RefreshCw } from 'lucide-react';
 import { useSession } from 'next-auth/react';
+import toast from 'react-hot-toast';
 import { InputSection } from './InputSection';
 import { ResolutionBanner } from './ResolutionBanner';
 import { RoundDisplay } from './RoundDisplay';
@@ -57,16 +58,22 @@ export function DialogueHero() {
     scrollToBottom();
   }, [rounds, currentRound, currentMessage]);
 
-  // Clear loading states when summary/questions are generated
+  // Clear loading states when summary/questions are generated and show success toasts
   useEffect(() => {
     if (currentSummary) {
       setIsGeneratingSummary(false);
+      toast.success('Summary generated successfully!', {
+        icon: '📝',
+      });
     }
   }, [currentSummary]);
 
   useEffect(() => {
     if (currentQuestionSet) {
       setIsGeneratingQuestions(false);
+      toast.success('Questions generated successfully!', {
+        icon: '❓',
+      });
     }
   }, [currentQuestionSet]);
 

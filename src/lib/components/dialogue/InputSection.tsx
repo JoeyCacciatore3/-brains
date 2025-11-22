@@ -2,6 +2,7 @@
 
 import { useState, useRef, useMemo, useEffect } from 'react';
 import { Upload, X, AlertCircle } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { Button } from '@/lib/components/ui/Button';
 import { LoadingSpinner } from '@/lib/components/ui/LoadingSpinner';
 import { getFileMediaType, sanitizeFilename } from '@/lib/utils';
@@ -128,6 +129,15 @@ export function InputSection({
       if (combined.length > 5) {
         setLocalError(`Maximum 5 files allowed. Only the first 5 files will be used.`);
         return combined.slice(0, 5);
+      }
+      // Show success toast when files are added
+      if (validFiles.length > 0) {
+        toast.success(
+          `${validFiles.length} file${validFiles.length > 1 ? 's' : ''} added successfully!`,
+          {
+            icon: '📎',
+          }
+        );
       }
       return combined;
     });

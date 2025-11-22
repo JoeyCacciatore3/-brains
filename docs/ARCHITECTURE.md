@@ -394,18 +394,27 @@ httpServer.listen(port);
 
 - Register connection handler
 - Register event handlers for:
-  - `start-dialogue` (with rate limiting and validation)
-  - `user-input` (with rate limiting and UUID validation)
-  - `submit-answers` (with rate limiting and validation)
-  - `proceed-dialogue` (with rate limiting and validation)
-  - `generate-summary` (with rate limiting and validation)
-  - `generate-questions` (with rate limiting and validation)
+  - `start-dialogue` (with rate limiting, validation, and acknowledgments)
+  - `user-input` (with rate limiting, UUID validation, and acknowledgments)
+  - `submit-answers` (with rate limiting, validation, and acknowledgments)
+  - `proceed-dialogue` (with rate limiting, validation, and acknowledgments)
+  - `generate-summary` (with rate limiting, validation, and acknowledgments)
+  - `generate-questions` (with rate limiting, validation, and acknowledgments)
   - `disconnect`
 - Extract client IP for rate limiting
 - Manage conversation rooms
 - Process dialogue loop
 - Emit real-time events to clients
 - Handle errors with structured logging
+- Send acknowledgments for critical events
+
+**Acknowledgments:**
+
+- All critical events support Socket.IO acknowledgments
+- Server sends acknowledgment after successful validation and before async processing
+- Client implements timeout handling (5 seconds default)
+- Acknowledgment failures are logged but don't block operations
+- Provides delivery confirmation for important operations
 
 **Connection Flow:**
 
@@ -601,24 +610,15 @@ httpServer.listen(port);
 }
 ```
 
-##### `needs-user-input` ⚠️ DEPRECATED
+##### `needs-user-input` ❌ DEPRECATED (REMOVED)
 
 **Purpose:** Request user input/clarification
 
-**Status:** This event is **NOT emitted** by the server. The system uses `waitingForAction` state from `round-complete` event instead.
+**Status:** This event has been **fully removed** from the codebase. The system uses `waitingForAction` state from `round-complete` event instead.
 
-**Event Name:** `'needs-user-input'` (deprecated, not used)
+**Event Name:** `'needs-user-input'` (deprecated and removed)
 
-**Payload:**
-
-```typescript
-{
-  conversationId: string;
-  question?: string;       // Optional question text
-}
-```
-
-**Note:** Handler exists in client code but is never triggered. The system uses the `round-complete` event which sets `waitingForAction` to true, allowing users to provide input via action buttons.
+**Note:** This event and its handler have been completely removed. The system uses the `round-complete` event which sets `waitingForAction` to true, allowing users to provide input via action buttons.
 
 ##### `conversation-resolved`
 
@@ -1189,6 +1189,52 @@ UPDATE discussions SET updated_at = ?, [field] = ? WHERE id = ?
 2. Update summary field
 3. Write updated data to JSON file
 4. Update Markdown file with summary section
+
+### Backup Operations
+
+**Location:** `src/lib/discussions/backup-manager.ts`
+
+#### `backupDiscussion(userId, discussionId): Promise<string>`
+
+**Purpose:** Create a backup of a discussion
+
+**Process:**
+
+1. Verify discussion exists and user ownership
+2. Read discussion data
+3. Create backup directory: `data/backups/{userId}/{discussionId}-{timestamp}/`
+4. Copy JSON and Markdown files to backup location
+5. Create metadata.json with backup information
+6. Return backup directory path
+
+**Configuration:**
+
+- `BACKUP_ENABLED`: Enable/disable backups (default: true)
+- `BACKUP_RETENTION_DAYS`: Days to retain backups (default: 30)
+- `BACKUP_INTERVAL_HOURS`: Hours between periodic backups (default: 1)
+
+#### `cleanupOldBackups(): Promise<void>`
+
+**Purpose:** Remove backups older than retention policy
+
+**Process:**
+
+1. Calculate cutoff date (now - retention days)
+2. Scan all user backup directories
+3. Delete backups older than cutoff date
+4. Log cleanup results
+
+#### `schedulePeriodicBackups(): Promise<void>`
+
+**Purpose:** Start periodic backup scheduler
+
+**Process:**
+
+1. Run initial cleanup
+2. Schedule periodic backups for active discussions
+3. Run cleanup after each backup cycle
+
+**Note:** Backups are created asynchronously and do not block main operations.
 
 ### Token Counting Operations
 
@@ -2302,7 +2348,6 @@ extends ButtonHTMLAttributes<HTMLButtonElement> {
 - `message-start` → Set currentMessage
 - `message-chunk` → Append to currentMessage.content
 - `message-complete` → Add to messages, clear currentMessage
-- `needs-user-input` → Set needsUserInput and question
 - `conversation-resolved` → Set isResolved
 - `error` → Set error message
 
@@ -2354,11 +2399,10 @@ extends ButtonHTMLAttributes<HTMLButtonElement> {
        ├─> 'message-start' → Initialize currentMessage
        ├─> 'message-chunk' → Append to currentMessage.content
        ├─> 'message-complete' → Clear currentMessage (rounds are source of truth)
-       ├─> 'round-complete' → Add round to rounds array, display round
+       ├─> 'round-complete' → Add round to rounds array, display round, set waitingForAction
        ├─> 'moderator-summary-created' → Update round with moderator summary
        ├─> 'questions-generated' → Set currentQuestionSet
        ├─> 'summary-created' → Set currentSummary
-       ├─> 'needs-user-input' → Show UserInput component
        └─> 'conversation-resolved' → Show ResolutionBanner
 ```
 
@@ -2388,11 +2432,10 @@ LLM API Response (SSE Stream)
 ### User Input Flow
 
 ```
-1. AI detects need for user input
-   └─> needsUserInput() returns true
-       └─> Server updates conversation (needs_user_input = 1)
-           └─> Emits 'needs-user-input' with question
-               └─> Client shows UserInput component
+1. Round completes
+   └─> Server emits 'round-complete' event
+       └─> Client sets waitingForAction = true
+           └─> Action buttons become available (User Input, Proceed, etc.)
 
 2. User provides input
    └─> UserInput component collects text
@@ -3562,7 +3605,7 @@ You are now in Exchange N. [Other AI] just said:
 
 #### `src/lib/logger.ts`
 
-**Implementation:** Winston structured logging
+**Implementation:** Winston structured logging with automatic sanitization
 
 **Features:**
 
@@ -3571,6 +3614,22 @@ You are now in Exchange N. [Other AI] just said:
 - File rotation for production logs
 - Configurable log levels
 - Error stack trace capture
+- Automatic sanitization of sensitive data
+
+**Log Sanitization:**
+
+- Removes API keys, secrets, tokens, and passwords
+- Redacts email addresses
+- Removes JWT tokens
+- Sanitizes file contents (only logs metadata)
+- Applies to all log entries automatically via Winston format
+- Uses pattern matching and key-based filtering
+
+**Sanitization Function:** `sanitizeLogData(data: unknown): unknown`
+
+- Recursively sanitizes objects and arrays
+- Handles strings with regex pattern matching
+- Preserves log structure while removing sensitive data
 
 **Log Levels:**
 
@@ -3703,10 +3762,18 @@ The document serves as a comprehensive reference for understanding, maintaining,
 ---
 
 **Last Updated:** December 2024
-**Version:** 1.1.0 (Updated with security fixes and new features)
+**Version:** 1.2.0 (Updated with operational fixes and enhancements)
 
 **Recent Updates:**
 
+- Removed deprecated `needs-user-input` event handler
+- Added toast notification system (react-hot-toast) for user feedback
+- Implemented file backup system with periodic backups and retention policy
+- Added log sanitization to remove sensitive data from logs
+- Added startup cleanup routine for orphaned temp files
+- Implemented Socket.IO acknowledgments for critical events with timeout handling
+- Added new configuration constants (backup, session, LLM timeouts, security)
+- Enhanced error handling with acknowledgment timeouts
 - Added rate limiting to all socket handlers
 - Implemented Redis-based distributed rate limiting
 - Added input sanitization (DOMPurify)

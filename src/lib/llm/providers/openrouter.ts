@@ -217,6 +217,7 @@ export class OpenRouterProvider implements LLMProvider {
           max_tokens: this.config.maxTokens,
           temperature: this.config.temperature,
           stream: true,
+          stop: ['\n\n', '. ', '! ', '? '], // Stop sequences to encourage natural sentence endings
         }),
         signal: controller.signal,
       });
@@ -279,6 +280,7 @@ export class OpenRouterProvider implements LLMProvider {
       const decoder = new TextDecoder();
       const parser = new SSEParser('OpenRouter');
       let fullContent = '';
+      let finishReason: string | null = null;
 
       try {
         while (true) {
@@ -293,11 +295,20 @@ export class OpenRouterProvider implements LLMProvider {
 
             const parseResult = parser.tryParseJSON(data);
             if (parseResult.success && parseResult.data) {
-              const parsed = parseResult.data as { choices?: Array<{ delta?: { content?: string } }> };
+              const parsed = parseResult.data as {
+                choices?: Array<{
+                  delta?: { content?: string };
+                  finish_reason?: string;
+                }>;
+              };
               const content = parsed.choices?.[0]?.delta?.content || '';
               if (content) {
                 fullContent += content;
                 onChunk(content);
+              }
+              // Extract finish_reason from the final chunk
+              if (parsed.choices?.[0]?.finish_reason) {
+                finishReason = parsed.choices[0].finish_reason;
               }
             } else if (!parseResult.isComplete) {
               // Incomplete JSON - will be handled in next chunk
@@ -350,6 +361,25 @@ export class OpenRouterProvider implements LLMProvider {
         });
       }
 
+      // Log finish_reason for monitoring
+      logger.debug('OpenRouter API response completed', {
+        provider: 'OpenRouter',
+        finishReason,
+        contentLength: fullContent.length,
+        model,
+      });
+
+      // If response was cut off due to length, complete the thought
+      if (finishReason === 'length') {
+        logger.info('Response was truncated, completing thought', {
+          provider: 'OpenRouter',
+          initialLength: fullContent.length,
+          model,
+        });
+        const continuation = await this.completeThought(messages, fullContent, model);
+        return fullContent + continuation;
+      }
+
       return fullContent;
     } catch (error) {
       // Ensure timeout is always cleared
@@ -384,6 +414,144 @@ export class OpenRouterProvider implements LLMProvider {
         }
       }
       throw error;
+    }
+  }
+
+  /**
+   * Complete a thought that was cut off due to token limit
+   */
+  private async completeThought(
+    originalMessages: LLMMessage[],
+    truncatedContent: string,
+    model: string
+  ): Promise<string> {
+    // Limit continuation to 20% of original max_tokens (rounded up, minimum 50)
+    const continuationTokens = Math.max(50, Math.ceil(this.config.maxTokens! * 0.2));
+
+    // Process messages for continuation (similar to streamWithModel)
+    const processedMessages = await Promise.all(
+      originalMessages.map(async (msg) => {
+        let content = msg.content;
+        if (msg.files && msg.files.length > 0) {
+          // For continuation, we can skip file processing to save tokens
+          // Just include a note that files were previously provided
+          content += '\n[Files were provided in previous context]';
+        }
+        return {
+          role: msg.role,
+          content,
+        };
+      })
+    );
+
+    const continuationMessages = [
+      ...processedMessages,
+      {
+        role: 'assistant' as const,
+        content: truncatedContent,
+      },
+      {
+        role: 'user' as const,
+        content: `Complete your previous thought. You were cut off. Finish your statement naturally in ${continuationTokens} tokens or less.`,
+      },
+    ];
+
+    let continuation = '';
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), LLM_CONFIG.DEFAULT_TIMEOUT_MS);
+
+      try {
+        const appUrl =
+          process.env.NEXT_PUBLIC_APP_URL ||
+          process.env.APP_URL ||
+          (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000');
+
+        const headers: Record<string, string> = {
+          Authorization: `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': appUrl,
+          'X-Title': 'AI Dialogue Platform',
+        };
+
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model: model,
+            messages: continuationMessages,
+            max_tokens: continuationTokens,
+            temperature: this.config.temperature,
+            stream: true,
+            stop: ['\n\n', '. ', '! ', '? '],
+          }),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          logger.warn('Failed to get continuation from OpenRouter API', {
+            provider: 'OpenRouter',
+            status: response.status,
+            model,
+          });
+          return ''; // Return empty if continuation fails
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          return '';
+        }
+
+        const decoder = new TextDecoder();
+        const parser = new SSEParser('OpenRouter');
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value, { stream: true });
+            const dataLines = parser.processChunk(chunk);
+
+            for (const data of dataLines) {
+              if (data === '[DONE]') continue;
+
+              const parseResult = parser.tryParseJSON(data);
+              if (parseResult.success && parseResult.data) {
+                const parsed = parseResult.data as {
+                  choices?: Array<{ delta?: { content?: string } }>;
+                };
+                const content = parsed.choices?.[0]?.delta?.content || '';
+                if (content) {
+                  continuation += content;
+                }
+              }
+            }
+          }
+        } finally {
+          reader.releaseLock();
+          parser.clearBuffer();
+        }
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      logger.info('Thought completion successful', {
+        provider: 'OpenRouter',
+        continuationLength: continuation.length,
+        model,
+      });
+
+      return continuation.trim();
+    } catch (error) {
+      logger.warn('Failed to complete thought', {
+        provider: 'OpenRouter',
+        error: error instanceof Error ? error.message : String(error),
+        model,
+      });
+      return ''; // Return empty if continuation fails
     }
   }
 }

@@ -10,7 +10,7 @@ import { validateEnvironmentOrExit } from './src/lib/env-validation';
 import { logger } from './src/lib/logger';
 import { closeDatabase } from './src/lib/db';
 import { closeRedisClient } from './src/lib/db/redis';
-import { startTempFileCleanup } from './src/lib/discussions/temp-cleanup';
+import { startTempFileCleanup, cleanupOrphanedTempFiles } from './src/lib/discussions/temp-cleanup';
 
 // Load environment variables from .env.local (Next.js convention)
 config({ path: resolve(process.cwd(), '.env.local') });
@@ -35,6 +35,29 @@ validateEnvironmentOrExit();
 
 // Start temp file cleanup job
 startTempFileCleanup();
+
+// Run startup cleanup for orphaned temp files
+cleanupOrphanedTempFiles()
+  .then((result) => {
+    logger.info('Startup cleanup completed', {
+      cleaned: result.cleaned,
+      errors: result.errors,
+      totalSizeMB: (result.totalSize / 1024 / 1024).toFixed(2),
+    });
+  })
+  .catch((error) => {
+    logger.error('Startup cleanup failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // Don't block server startup on cleanup failure
+  });
+
+// Start periodic backup scheduler
+import('./src/lib/discussions/backup-manager').then(({ schedulePeriodicBackups }) => {
+  schedulePeriodicBackups().catch((error) => {
+    logger.error('Failed to start backup scheduler', { error });
+  });
+});
 
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = process.env.HOSTNAME || 'localhost';

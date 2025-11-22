@@ -43,6 +43,7 @@ export class MistralProvider implements LLMProvider {
           max_tokens: this.config.maxTokens,
           temperature: this.config.temperature,
           stream: true,
+          stop: ['\n\n', '. ', '! ', '? '], // Stop sequences to encourage natural sentence endings
         }),
         signal: controller.signal,
       });
@@ -92,6 +93,7 @@ export class MistralProvider implements LLMProvider {
       const decoder = new TextDecoder();
       const parser = new SSEParser('Mistral');
       let fullContent = '';
+      let finishReason: string | null = null;
 
       try {
         while (true) {
@@ -106,11 +108,20 @@ export class MistralProvider implements LLMProvider {
 
             const parseResult = parser.tryParseJSON(data);
             if (parseResult.success && parseResult.data) {
-              const parsed = parseResult.data as { choices?: Array<{ delta?: { content?: string } }> };
+              const parsed = parseResult.data as {
+                choices?: Array<{
+                  delta?: { content?: string };
+                  finish_reason?: string;
+                }>;
+              };
               const content = parsed.choices?.[0]?.delta?.content || '';
               if (content) {
                 fullContent += content;
                 onChunk(content);
+              }
+              // Extract finish_reason from the final chunk
+              if (parsed.choices?.[0]?.finish_reason) {
+                finishReason = parsed.choices[0].finish_reason;
               }
             } else if (!parseResult.isComplete) {
               // Incomplete JSON - will be handled in next chunk
@@ -163,6 +174,23 @@ export class MistralProvider implements LLMProvider {
         });
       }
 
+      // Log finish_reason for monitoring
+      logger.debug('Mistral API response completed', {
+        provider: 'Mistral',
+        finishReason,
+        contentLength: fullContent.length,
+      });
+
+      // If response was cut off due to length, complete the thought
+      if (finishReason === 'length') {
+        logger.info('Response was truncated, completing thought', {
+          provider: 'Mistral',
+          initialLength: fullContent.length,
+        });
+        const continuation = await this.completeThought(messages, fullContent);
+        return fullContent + continuation;
+      }
+
       return fullContent;
     } catch (error) {
       // Ensure timeout is always cleared
@@ -197,6 +225,118 @@ export class MistralProvider implements LLMProvider {
         }
       }
       throw error;
+    }
+  }
+
+  /**
+   * Complete a thought that was cut off due to token limit
+   */
+  private async completeThought(
+    originalMessages: LLMMessage[],
+    truncatedContent: string
+  ): Promise<string> {
+    // Limit continuation to 20% of original max_tokens (rounded up, minimum 50)
+    const continuationTokens = Math.max(50, Math.ceil(this.config.maxTokens! * 0.2));
+
+    const continuationMessages: LLMMessage[] = [
+      ...originalMessages,
+      {
+        role: 'assistant',
+        content: truncatedContent,
+      },
+      {
+        role: 'user',
+        content: `Complete your previous thought. You were cut off. Finish your statement naturally in ${continuationTokens} tokens or less.`,
+      },
+    ];
+
+    let continuation = '';
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), LLM_CONFIG.DEFAULT_TIMEOUT_MS);
+
+      try {
+        const response = await fetch('https://api.mistral.ai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${this.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: this.config.model,
+            messages: continuationMessages.map((msg) => ({
+              role: msg.role,
+              content: msg.content,
+            })),
+            max_tokens: continuationTokens,
+            temperature: this.config.temperature,
+            stream: true,
+            stop: ['\n\n', '. ', '! ', '? '],
+          }),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          logger.warn('Failed to get continuation from Mistral API', {
+            provider: 'Mistral',
+            status: response.status,
+          });
+          return ''; // Return empty if continuation fails
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          return '';
+        }
+
+        const decoder = new TextDecoder();
+        const parser = new SSEParser('Mistral');
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value, { stream: true });
+            const dataLines = parser.processChunk(chunk);
+
+            for (const data of dataLines) {
+              if (data === '[DONE]') continue;
+
+              const parseResult = parser.tryParseJSON(data);
+              if (parseResult.success && parseResult.data) {
+                const parsed = parseResult.data as {
+                  choices?: Array<{ delta?: { content?: string } }>;
+                };
+                const content = parsed.choices?.[0]?.delta?.content || '';
+                if (content) {
+                  continuation += content;
+                }
+              }
+            }
+          }
+        } finally {
+          reader.releaseLock();
+          parser.clearBuffer();
+        }
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      logger.info('Thought completion successful', {
+        provider: 'Mistral',
+        continuationLength: continuation.length,
+      });
+
+      return continuation.trim();
+    } catch (error) {
+      logger.warn('Failed to complete thought', {
+        provider: 'Mistral',
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return ''; // Return empty if continuation fails
     }
   }
 }

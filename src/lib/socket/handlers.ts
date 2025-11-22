@@ -216,8 +216,9 @@ export function setupSocketHandlers(io: Server) {
     };
 
     // Start a new dialogue
-    socket.on('start-dialogue', async (data: StartDialogueEvent) => {
+    socket.on('start-dialogue', async (data: StartDialogueEvent, ack?: (response: { error?: string; data?: unknown }) => void) => {
       if (!checkMessageLimits(data)) {
+        if (ack) ack({ error: 'Message limits exceeded' });
         return;
       }
       logger.info('Received start-dialogue event', {
@@ -231,11 +232,12 @@ export function setupSocketHandlers(io: Server) {
           for (const file of data.files) {
             if (!file.name || !file.type || file.size === undefined) {
               const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, { field: 'file' });
-              socket.emit('error', {
-                message: 'Invalid file data provided. Please try uploading the file again.',
-                code: error.code,
-              });
-              return;
+            socket.emit('error', {
+              message: 'Invalid file data provided. Please try uploading the file again.',
+              code: error.code,
+            });
+            if (ack) ack({ error: 'Invalid file data provided' });
+            return;
             }
 
             // Sanitize file name to prevent path traversal attacks
@@ -468,6 +470,12 @@ export function setupSocketHandlers(io: Server) {
             discussionId,
             hasActiveDiscussion,
           });
+
+          // Send acknowledgment
+          if (ack) {
+            ack({ data: { discussionId, hasActiveDiscussion } });
+          }
+
           logger.info('Discussion started', {
             discussionId,
             userId: effectiveUserId,
@@ -551,8 +559,9 @@ export function setupSocketHandlers(io: Server) {
     });
 
     // Handle user input
-    socket.on('user-input', async (data: UserInputEvent) => {
+    socket.on('user-input', async (data: UserInputEvent, ack?: (response: { error?: string; data?: unknown }) => void) => {
       if (!checkMessageLimits(data)) {
+        if (ack) ack({ error: 'Message limits exceeded' });
         return;
       }
       logger.info('Received user-input event', {
@@ -774,6 +783,11 @@ export function setupSocketHandlers(io: Server) {
           userId: discussion.user_id,
         });
 
+        // Send acknowledgment
+        if (ack) {
+          ack({ data: { discussionId: effectiveDiscussionId } });
+        }
+
         // Continue dialogue (using round-based processing)
         await processDiscussionDialogueRounds(
           io,
@@ -802,8 +816,9 @@ export function setupSocketHandlers(io: Server) {
     });
 
     // Handle question answers submission
-    socket.on('submit-answers', async (data: SubmitAnswersEvent) => {
+    socket.on('submit-answers', async (data: SubmitAnswersEvent, ack?: (response: { error?: string; data?: unknown }) => void) => {
       if (!checkMessageLimits(data)) {
+        if (ack) ack({ error: 'Message limits exceeded' });
         return;
       }
       logger.info('Received submit-answers event', {
@@ -891,6 +906,11 @@ export function setupSocketHandlers(io: Server) {
           answerCount: Object.keys(answers).length,
         });
 
+        // Send acknowledgment
+        if (ack) {
+          ack({ data: { discussionId, roundNumber } });
+        }
+
         // Continue dialogue with updated context
         await processDiscussionDialogueRounds(
           io,
@@ -915,8 +935,9 @@ export function setupSocketHandlers(io: Server) {
     });
 
     // Handle proceed-dialogue event
-    socket.on('proceed-dialogue', async (data: ProceedDialogueEvent) => {
+    socket.on('proceed-dialogue', async (data: ProceedDialogueEvent, ack?: (response: { error?: string; data?: unknown }) => void) => {
       if (!checkMessageLimits(data)) {
+        if (ack) ack({ error: 'Message limits exceeded' });
         return;
       }
       logger.info('Received proceed-dialogue event', {
@@ -973,7 +994,13 @@ export function setupSocketHandlers(io: Server) {
         if (!verifyDiscussionOwnership(discussionId, userId)) {
           const authError = createAuthorizationError(discussionId);
           socket.emit('error', authError);
+          if (ack) ack({ error: authError.message });
           return;
+        }
+
+        // Send acknowledgment before starting async processing
+        if (ack) {
+          ack({ data: { discussionId } });
         }
 
         // Continue to next round
@@ -1002,8 +1029,9 @@ export function setupSocketHandlers(io: Server) {
     });
 
     // Handle generate-summary event
-    socket.on('generate-summary', async (data: GenerateSummaryEvent) => {
+    socket.on('generate-summary', async (data: GenerateSummaryEvent, ack?: (response: { error?: string; data?: unknown }) => void) => {
       if (!checkMessageLimits(data)) {
+        if (ack) ack({ error: 'Message limits exceeded' });
         return;
       }
       logger.info('Received generate-summary event', {
@@ -1099,6 +1127,11 @@ export function setupSocketHandlers(io: Server) {
           summary: summaryEntry,
         });
 
+        // Send acknowledgment
+        if (ack) {
+          ack({ data: { discussionId, summary: summaryEntry } });
+        }
+
         logger.info('Summary generated successfully', {
           discussionId,
           roundNumber: targetRoundNumber,
@@ -1120,8 +1153,9 @@ export function setupSocketHandlers(io: Server) {
     });
 
     // Handle generate-questions event
-    socket.on('generate-questions', async (data: GenerateQuestionsEvent) => {
+    socket.on('generate-questions', async (data: GenerateQuestionsEvent, ack?: (response: { error?: string; data?: unknown }) => void) => {
       if (!checkMessageLimits(data)) {
+        if (ack) ack({ error: 'Message limits exceeded' });
         return;
       }
       logger.info('Received generate-questions event', {
@@ -1237,6 +1271,11 @@ export function setupSocketHandlers(io: Server) {
           questionSet,
           roundNumber: targetRoundNumber,
         });
+
+        // Send acknowledgment
+        if (ack) {
+          ack({ data: { discussionId, questionSet, roundNumber: targetRoundNumber } });
+        }
 
         logger.info('Questions generated successfully', {
           discussionId,

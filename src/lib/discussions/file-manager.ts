@@ -11,6 +11,8 @@ import {
 } from './formatter';
 import { countTokens } from './token-counter';
 import { withLock } from './file-lock';
+import { backupDiscussion } from './backup-manager';
+import { BACKUP_CONFIG } from '@/lib/config';
 
 const DISCUSSIONS_DIR =
   process.env.DISCUSSIONS_DIR || path.join(process.cwd(), 'data', 'discussions');
@@ -318,6 +320,18 @@ export async function createDiscussion(
     );
 
     logger.info('Discussion files created', { discussionId: id, userId, topic });
+
+    // Trigger backup asynchronously (don't block)
+    if (BACKUP_CONFIG.ENABLED) {
+      backupDiscussion(userId, id).catch((backupError) => {
+        logger.warn('Failed to backup discussion after creation', {
+          error: backupError instanceof Error ? backupError.message : String(backupError),
+          discussionId: id,
+          userId,
+        });
+      });
+    }
+
     return { id, jsonPath: paths.json, mdPath: paths.md };
   } catch (error) {
     logger.error('Failed to create discussion files', { error, discussionId: id, userId });

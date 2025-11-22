@@ -37,7 +37,9 @@ IMPORTANT: When you need clarification, additional context, or user input to pro
 - "What are your preferences regarding A?"
 - "Could you help me understand B?"
 
-This is a real-time dialogue. Respond as if you're having a conversation with a colleague. Make it readable, engaging, and natural. Your responses should feel like you're actively listening and responding, not just making isolated statements. Keep responses concise and focused - aim for 1-2 paragraphs that flow naturally and build on what was just said.`,
+This is a real-time dialogue. Respond as if you're having a conversation with a colleague. Make it readable, engaging, and natural. Your responses should feel like you're actively listening and responding, not just making isolated statements. Keep responses concise and focused - aim for 1-2 paragraphs that flow naturally and build on what was just said.
+
+IMPORTANT: Always complete your full thought within the token limit. If approaching the limit, conclude your statement naturally rather than being cut off mid-sentence. Finish your response with proper punctuation and a complete thought.`,
   },
   analyzer: {
     id: 'analyzer',
@@ -63,7 +65,9 @@ IMPORTANT: When you need clarification, additional context, or user input to pro
 - "What are your preferences regarding A?"
 - "Could you help me understand B?"
 
-This is a real-time dialogue. Respond as if you're having a thoughtful conversation with a colleague. Make it readable, engaging, and natural. Your responses should feel like you're actively listening, analyzing, and contributing to a shared exploration. Keep responses concise and focused - aim for 1-2 paragraphs that flow naturally and deepen the discussion.`,
+This is a real-time dialogue. Respond as if you're having a thoughtful conversation with a colleague. Make it readable, engaging, and natural. Your responses should feel like you're actively listening, analyzing, and contributing to a shared exploration. Keep responses concise and focused - aim for 1-2 paragraphs that flow naturally and deepen the discussion.
+
+IMPORTANT: Always complete your full thought within the token limit. If approaching the limit, conclude your statement naturally rather than being cut off mid-sentence. Finish your response with proper punctuation and a complete thought.`,
   },
   summarizer: {
     id: 'summarizer',
@@ -88,7 +92,9 @@ Your summaries should:
 - Be written in clear, professional language
 - Be structured for easy reading and reference
 
-The summary will be used to maintain context awareness when the discussion grows long, so it must capture the essence of the conversation while being significantly shorter than the original content.`,
+The summary will be used to maintain context awareness when the discussion grows long, so it must capture the essence of the conversation while being significantly shorter than the original content.
+
+IMPORTANT: Ensure your summary is a complete thought and ends naturally, even if you must be more concise. Always finish with proper punctuation and a complete sentence. Never cut off mid-thought - if approaching the token limit, conclude your summary naturally rather than being truncated.`,
   },
   moderator: {
     id: 'moderator',
@@ -113,7 +119,9 @@ You participate as a third voice in the dialogue, not as an external observer. Y
 - Maintain a collaborative, constructive tone
 - Be concise and focused - aim for 1-2 paragraphs that contribute meaningfully
 
-This is a real-time dialogue. Respond as if you're actively participating in the conversation. Reference specific points made by Solver AI and Analyzer AI (e.g., "Building on Solver AI's point about X and Analyzer AI's concern about Y..."). Make it readable, engaging, and natural. Your goal is to help the discussion reach meaningful, well-reasoned conclusions through active participation.`,
+This is a real-time dialogue. Respond as if you're actively participating in the conversation. Reference specific points made by Solver AI and Analyzer AI (e.g., "Building on Solver AI's point about X and Analyzer AI's concern about Y..."). Make it readable, engaging, and natural. Your goal is to help the discussion reach meaningful, well-reasoned conclusions through active participation.
+
+IMPORTANT: Always complete your full thought within the token limit. If approaching the limit, conclude your statement naturally rather than being cut off mid-sentence. Finish your response with proper punctuation and a complete thought.`,
   },
 };
 
