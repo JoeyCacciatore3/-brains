@@ -1,6 +1,6 @@
 import { getNextAuthInstance } from '@/lib/auth/config';
 import { logger } from '@/lib/logger';
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 // Check provider availability at runtime
 function checkProvidersAtRuntime(): void {
@@ -23,8 +23,8 @@ function checkProvidersAtRuntime(): void {
 
 // Wrap handlers with error handling
 async function handleRequest(
-  handler: (req: Request) => Promise<Response>,
-  req: Request
+  handler: (req: NextRequest) => Promise<Response>,
+  req: NextRequest
 ): Promise<Response> {
   try {
     const url = new URL(req.url);
@@ -93,13 +93,13 @@ async function handleRequest(
   }
 }
 
-export async function GET(req: Request) {
+export async function GET(req: NextRequest) {
   // Get NextAuth handlers with lazy initialization
   const handlers = getNextAuthInstance().handlers;
   return handleRequest(handlers.GET, req);
 }
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   // Get NextAuth handlers with lazy initialization
   const handlers = getNextAuthInstance().handlers;
   return handleRequest(handlers.POST, req);

@@ -22,8 +22,9 @@ export async function GET(request: NextRequest) {
       return rateLimitCheck.response;
     }
 
-    // NextAuth v5 in Next.js 16 automatically reads from request context
-    const session = await auth();
+    // NextAuth v5 in Next.js 16 reads from request context automatically
+    // Type assertion needed due to NextAuth v5 beta type definitions
+    const session = await (auth as any)();
     if (!session?.user?.email) {
       const response = NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
       return addRateLimitHeaders(response, getClientIP(request));
@@ -56,8 +57,9 @@ export async function DELETE(request: NextRequest) {
       return rateLimitCheck.response;
     }
 
-    // NextAuth v5 in Next.js 16 automatically reads from request context
-    const session = await auth();
+    // NextAuth v5 in Next.js 16 reads from request context automatically
+    // Type assertion needed due to NextAuth v5 beta type definitions
+    const session = await (auth as any)();
     if (!session?.user?.email) {
       const response = NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
       return addRateLimitHeaders(response, getClientIP(request));

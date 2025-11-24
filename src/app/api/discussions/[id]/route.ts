@@ -12,7 +12,7 @@ export const runtime = 'nodejs';
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     // Check rate limit
@@ -21,8 +21,9 @@ export async function DELETE(
       return rateLimitCheck.response;
     }
 
-    // NextAuth v5 in Next.js 16 automatically reads from request context
-    const session = await auth();
+    // NextAuth v5 in Next.js 16 reads from request context automatically
+    // Type assertion needed due to NextAuth v5 beta type definitions
+    const session = await (auth as any)();
     if (!session?.user?.email) {
       const response = NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
       return addRateLimitHeaders(response, getClientIP(request));
@@ -34,7 +35,7 @@ export async function DELETE(
       return addRateLimitHeaders(response, getClientIP(request));
     }
 
-    const discussionId = params.id;
+    const { id: discussionId } = await params;
     if (!discussionId) {
       const response = NextResponse.json({ error: 'Discussion ID is required' }, { status: 400 });
       return addRateLimitHeaders(response, getClientIP(request));
@@ -81,7 +82,7 @@ export async function DELETE(
  */
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     // Check rate limit
@@ -90,8 +91,9 @@ export async function PATCH(
       return rateLimitCheck.response;
     }
 
-    // NextAuth v5 in Next.js 16 automatically reads from request context
-    const session = await auth();
+    // NextAuth v5 in Next.js 16 reads from request context automatically
+    // Type assertion needed due to NextAuth v5 beta type definitions
+    const session = await (auth as any)();
     if (!session?.user?.email) {
       const response = NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
       return addRateLimitHeaders(response, getClientIP(request));
@@ -103,7 +105,7 @@ export async function PATCH(
       return addRateLimitHeaders(response, getClientIP(request));
     }
 
-    const discussionId = params.id;
+    const { id: discussionId } = await params;
     if (!discussionId) {
       const response = NextResponse.json({ error: 'Discussion ID is required' }, { status: 400 });
       return addRateLimitHeaders(response, getClientIP(request));

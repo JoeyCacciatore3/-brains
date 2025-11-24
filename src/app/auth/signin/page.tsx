@@ -2,13 +2,12 @@
 
 import { signIn } from 'next-auth/react';
 import { useState, useEffect } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { AlertCircle, ArrowLeft, Loader2, Info } from 'lucide-react';
 import { clientLogger } from '@/lib/client-logger';
 
 export default function SignInPage() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const [isLoadingGithub, setIsLoadingGithub] = useState(false);
   const [error, setError] = useState<string | null>(null);

@@ -304,6 +304,7 @@ IMPORTANT: Always complete your full thought within the token limit. Write compr
   let conversationTranscript = '';
   let lastMessage: ConversationMessage | null = null;
   let exchangeNumber = 1;
+  let completedRounds: DiscussionRound[] = [];
 
   logger.info('formatLLMPrompt called', {
     respondingPersonaName,
@@ -397,7 +398,7 @@ IMPORTANT: Always complete your full thought within the token limit. Write compr
 
     // Build transcript from completed rounds (all three AIs have responded)
     // Exclude incomplete round to prevent duplication
-    const completedRounds = roundsToInclude.filter(
+    completedRounds = roundsToInclude.filter(
       (r) => isRoundComplete(r) && (!incompleteRound || r.roundNumber !== incompleteRound.roundNumber)
     );
 
@@ -512,8 +513,8 @@ IMPORTANT: Always complete your full thought within the token limit. Write compr
         logger.info('🔍 AUDIT: Analyzer lastMessage determination', {
           currentRoundNumber,
           lastCompletedRound: lastRound.roundNumber,
-          lastMessagePersona: lastMessage.persona,
-          lastMessageTurn: lastMessage.turn,
+          lastMessagePersona: lastMessage?.persona,
+          lastMessageTurn: lastMessage?.turn,
           lastMessagePreview: lastMessage?.content?.substring(0, 100),
           note: 'Analyzer should respond to Moderator from previous round, never to Solver',
           validated: lastMessage?.persona === 'Moderator AI' || lastMessage === null,
@@ -560,7 +561,7 @@ IMPORTANT: Always complete your full thought within the token limit. Write compr
         logger.info('formatLLMPrompt: Analyzer starting new round - responding to Moderator from previous round', {
           lastCompletedRound: lastRound.roundNumber,
           targetRound,
-          lastMessagePersona: lastMessage.persona,
+          lastMessagePersona: lastMessage?.persona,
           exchangeNumber,
           expectedExchangeNumber: expectedExchangeForRound,
           verifiedCorrect: exchangeNumber === expectedExchangeForRound,
@@ -737,13 +738,13 @@ Please respond to the user's input. Address their question or concern directly. 
       logger.error('🚨 CRITICAL BUG: Analyzer incorrectly told to respond to Solver!', {
         respondingPersonaName,
         otherPersona,
-        lastMessagePersona: lastMessage.persona,
+        lastMessagePersona: lastMessage?.persona,
         currentRoundNumber,
         roundsCount: rounds?.length || 0,
         completedRoundsCount: rounds?.filter((r) =>
           r.analyzerResponse?.content && r.solverResponse?.content && r.moderatorResponse?.content
         ).length || 0,
-        lastMessageContent: lastMessage.content.substring(0, 100),
+        lastMessageContent: lastMessage?.content?.substring(0, 100),
       });
       // Fix: Analyzer should respond to Moderator from previous round, or null for Round 1
       // CRITICAL: Use only complete rounds to find the last Moderator response
@@ -756,7 +757,7 @@ Please respond to the user's input. Address their question or concern directly. 
           logger.info('formatLLMPrompt: Fixed - Analyzer now responding to Moderator from previous complete round', {
             lastCompletedRound: lastRound.roundNumber,
             currentRoundNumber,
-            moderatorContentLength: lastMessage.content.length,
+            moderatorContentLength: lastMessage?.content?.length || 0,
           });
         } else {
           // No completed rounds - this should be Round 1
