@@ -6,17 +6,19 @@ import { MessageBubble } from './MessageBubble';
 interface RoundDisplayProps {
   round: DiscussionRound;
   isCurrentRound?: boolean;
-  moderatorError?: string; // Deprecated: No longer used (Moderator AI participates directly in discussions, not as summary generator)
 }
 
 // Helper function to validate a message
-function isValidMessage(message: any): message is { content: string; persona: string; turn: number } {
+function isValidMessage(message: unknown): message is { content: string; persona: string; turn: number } {
   return (
-    message &&
+    message !== null &&
     typeof message === 'object' &&
-    typeof message.content === 'string' &&
-    typeof message.persona === 'string' &&
-    typeof message.turn === 'number'
+    'content' in message &&
+    'persona' in message &&
+    'turn' in message &&
+    typeof (message as Record<string, unknown>).content === 'string' &&
+    typeof (message as Record<string, unknown>).persona === 'string' &&
+    typeof (message as Record<string, unknown>).turn === 'number'
   );
 }
 
@@ -39,8 +41,8 @@ export function RoundDisplay({ round, isCurrentRound = false }: RoundDisplayProp
   if (!hasValidAnalyzer || !hasValidSolver || !hasValidModerator) {
     return (
       <div className={`mb-6 ${isCurrentRound ? 'animate-fade-in' : ''}`}>
-        <div className="mb-3 flex items-center gap-2 border-b-2 border-yellow-500 pb-2">
-          <h3 className="text-white font-semibold text-lg">Round {round.roundNumber || '?'}</h3>
+        <div className="mb-4 flex items-center gap-3">
+          <h3 className="text-white font-semibold text-xl tracking-tight">Round {round.roundNumber || '?'}</h3>
           <span className="text-yellow-400 text-sm">⚠️ Incomplete data</span>
         </div>
         <div className="p-4 border-2 border-yellow-500 rounded">
@@ -57,16 +59,16 @@ export function RoundDisplay({ round, isCurrentRound = false }: RoundDisplayProp
 
   return (
     <div className={`mb-6 ${isCurrentRound ? 'animate-fade-in' : ''}`}>
-      <div className="mb-3 flex items-center gap-2 border-b-2 border-green-500 pb-2">
-        <h3 className="text-white font-semibold text-lg">Round {round.roundNumber}</h3>
-        <span className="text-gray-400 text-sm">
+      <div className="mb-4 flex items-center gap-3">
+        <h3 className="text-white font-semibold text-xl tracking-tight">Round {round.roundNumber}</h3>
+        <span className="text-gray-400 text-sm font-light">
           {round.timestamp ? new Date(round.timestamp).toLocaleString() : 'No timestamp'}
         </span>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4 items-stretch">
         {/* Analyzer AI Response - Left column */}
-        <div className="flex flex-col">
+        <div className="flex flex-col h-full">
           <MessageBubble
             message={round.analyzerResponse}
             streamingContent={undefined}
@@ -75,7 +77,7 @@ export function RoundDisplay({ round, isCurrentRound = false }: RoundDisplayProp
         </div>
 
         {/* Solver AI Response - Middle column */}
-        <div className="flex flex-col">
+        <div className="flex flex-col h-full">
           <MessageBubble
             message={round.solverResponse}
             streamingContent={undefined}
@@ -84,7 +86,7 @@ export function RoundDisplay({ round, isCurrentRound = false }: RoundDisplayProp
         </div>
 
         {/* Moderator AI Response - Right column */}
-        <div className="flex flex-col">
+        <div className="flex flex-col h-full">
           <MessageBubble
             message={round.moderatorResponse}
             streamingContent={undefined}

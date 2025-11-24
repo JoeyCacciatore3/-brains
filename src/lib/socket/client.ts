@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { clientLogger } from '@/lib/client-logger';
 import type {
@@ -42,10 +42,8 @@ interface UseSocketReturn {
   isResolved: boolean;
   error: string | null;
   startDialogue: (topic: string, files?: FileData[], userId?: string) => void;
-  sendUserInput: (input: string) => void;
   submitAnswers: (roundNumber: number, answers: Record<string, string[]>) => void; // New
   proceedDialogue: () => void; // New
-  generateSummary: () => void; // New
   generateQuestions: () => void; // New
   reset: () => void;
   reconnect: () => void;
@@ -83,10 +81,55 @@ export function useSocket(): UseSocketReturn {
   const [isResolved, setIsResolved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Ref to store current discussionId for use in event handlers
+  // This allows event handlers to access the latest value without needing it in dependency array
+  const discussionIdRef = useRef<string | null>(null);
+
+  // Update ref whenever discussionId changes
+  useEffect(() => {
+    discussionIdRef.current = discussionId;
+  }, [discussionId]);
+
+  // Chunk tracking for detecting missing chunks and timeouts
+  interface ChunkTracking {
+    chunkCount: number;
+    lastChunkTime: number;
+    timeoutId: NodeJS.Timeout | null;
+    accumulatedLength: number;
+  }
+  const chunkTrackingRef = useRef<ChunkTracking | null>(null);
+
   // localStorage key for state persistence
   // Note: Key name uses "dialogue" instead of "discussion" for backward compatibility
   // with existing stored data. The key name doesn't affect functionality.
   const STORAGE_KEY = 'ai-dialogue-state';
+
+  /**
+   * Calculate turn number for a persona in a given round
+   * Formula: (roundNumber - 1) * 3 + position
+   * Position: 1 for Analyzer, 2 for Solver, 3 for Moderator
+   *
+   * This is a client-side duplicate of calculateTurnNumber from round-utils
+   * to avoid importing server-side dependencies (logger) in client code.
+   */
+  const calculateTurnNumber = (
+    roundNumber: number,
+    persona: 'Analyzer AI' | 'Solver AI' | 'Moderator AI'
+  ): number => {
+    const positionMap: Record<'Analyzer AI' | 'Solver AI' | 'Moderator AI', number> = {
+      'Analyzer AI': 1,
+      'Solver AI': 2,
+      'Moderator AI': 3,
+    };
+
+    const position = positionMap[persona];
+    if (!position) {
+      clientLogger.warn('Unknown persona in turn number calculation', { persona, roundNumber });
+      return (roundNumber - 1) * 3 + 1; // Default to Analyzer position
+    }
+
+    return (roundNumber - 1) * 3 + position;
+  };
 
   // Validation helpers for localStorage data
   const isValidMessage = (message: unknown): message is ConversationMessage => {
@@ -103,14 +146,103 @@ export function useSocket(): UseSocketReturn {
     );
   };
 
-  const isValidRound = (round: any): round is DiscussionRound => {
+  const isValidRound = (round: unknown): round is DiscussionRound => {
     if (!round || typeof round !== 'object') return false;
-    if (typeof round.roundNumber !== 'number') return false;
-    if (typeof round.timestamp !== 'string') return false;
-    if (!isValidMessage(round.solverResponse)) return false;
-    if (!isValidMessage(round.analyzerResponse)) return false;
-    if (!isValidMessage(round.moderatorResponse)) return false;
+
+    const roundObj = round as Record<string, unknown>;
+
+    // Check required fields
+    if (typeof roundObj.roundNumber !== 'number') return false;
+    if (typeof roundObj.timestamp !== 'string') return false;
+
+    // Check message responses
+    if (!isValidMessage(roundObj.solverResponse)) return false;
+    if (!isValidMessage(roundObj.analyzerResponse)) return false;
+    if (!isValidMessage(roundObj.moderatorResponse)) return false;
+
+    // Optional fields are allowed to be undefined
     return true;
+  };
+
+  /**
+   * Validate and fix turn numbers in rounds
+   * Turn numbers must match formula: (roundNumber - 1) * 3 + position
+   * - Analyzer: position 1
+   * - Solver: position 2
+   * - Moderator: position 3
+   *
+   * @param rounds - Rounds to validate and fix
+   * @returns Rounds with corrected turn numbers and count of corrections made
+   */
+  const validateAndFixTurnNumbers = (
+    rounds: DiscussionRound[]
+  ): { rounds: DiscussionRound[]; correctionsCount: number } => {
+    let correctionsCount = 0;
+    const correctedRounds = rounds.map((round) => {
+      const roundNumber = round.roundNumber;
+      let needsCorrection = false;
+      const correctedRound = { ...round };
+
+      // Validate and fix Analyzer turn number
+      const expectedAnalyzerTurn = calculateTurnNumber(roundNumber, 'Analyzer AI');
+      if (round.analyzerResponse.turn !== expectedAnalyzerTurn) {
+        clientLogger.warn('Fixing Analyzer turn number in localStorage round', {
+          roundNumber,
+          incorrectTurn: round.analyzerResponse.turn,
+          correctTurn: expectedAnalyzerTurn,
+        });
+        correctedRound.analyzerResponse = {
+          ...round.analyzerResponse,
+          turn: expectedAnalyzerTurn,
+        };
+        needsCorrection = true;
+      }
+
+      // Validate and fix Solver turn number
+      const expectedSolverTurn = calculateTurnNumber(roundNumber, 'Solver AI');
+      if (round.solverResponse.turn !== expectedSolverTurn) {
+        clientLogger.warn('Fixing Solver turn number in localStorage round', {
+          roundNumber,
+          incorrectTurn: round.solverResponse.turn,
+          correctTurn: expectedSolverTurn,
+        });
+        correctedRound.solverResponse = {
+          ...round.solverResponse,
+          turn: expectedSolverTurn,
+        };
+        needsCorrection = true;
+      }
+
+      // Validate and fix Moderator turn number
+      const expectedModeratorTurn = calculateTurnNumber(roundNumber, 'Moderator AI');
+      if (round.moderatorResponse.turn !== expectedModeratorTurn) {
+        clientLogger.warn('Fixing Moderator turn number in localStorage round', {
+          roundNumber,
+          incorrectTurn: round.moderatorResponse.turn,
+          correctTurn: expectedModeratorTurn,
+        });
+        correctedRound.moderatorResponse = {
+          ...round.moderatorResponse,
+          turn: expectedModeratorTurn,
+        };
+        needsCorrection = true;
+      }
+
+      if (needsCorrection) {
+        correctionsCount++;
+      }
+
+      return correctedRound;
+    });
+
+    if (correctionsCount > 0) {
+      clientLogger.info('Fixed turn numbers in localStorage rounds', {
+        totalRounds: rounds.length,
+        correctedRounds: correctionsCount,
+      });
+    }
+
+    return { rounds: correctedRounds, correctionsCount };
   };
 
   // Save state to localStorage
@@ -172,10 +304,32 @@ export function useSocket(): UseSocketReturn {
           clientLogger.warn('Current round from localStorage was invalid, clearing it');
         }
 
+        // CRITICAL FIX: Validate and fix turn numbers in restored rounds
+        // This prevents corrupted turn numbers from previous buggy sessions
+        // from causing incorrect exchange numbers
+        const { rounds: correctedRounds, correctionsCount: roundsCorrections } = validateAndFixTurnNumbers(validRounds);
+
+        // Also validate and fix currentRound if it exists
+        let correctedCurrentRound = validCurrentRound;
+        if (validCurrentRound) {
+          const { rounds: correctedCurrentRoundArray, correctionsCount: currentRoundCorrections } = validateAndFixTurnNumbers([validCurrentRound]);
+          if (currentRoundCorrections > 0) {
+            correctedCurrentRound = correctedCurrentRoundArray[0];
+            clientLogger.warn('Fixed turn numbers in currentRound from localStorage');
+          }
+        }
+
+        if (roundsCorrections > 0 || (validCurrentRound && correctedCurrentRound !== validCurrentRound)) {
+          clientLogger.info('Turn number validation completed for localStorage data', {
+            roundsCorrected: roundsCorrections,
+            currentRoundCorrected: validCurrentRound && correctedCurrentRound !== validCurrentRound,
+          });
+        }
+
         return {
           ...parsed,
-          rounds: validRounds,
-          currentRound: validCurrentRound,
+          rounds: correctedRounds,
+          currentRound: correctedCurrentRound,
           summaries: Array.isArray(parsed.summaries) ? parsed.summaries : [],
         };
       }
@@ -460,6 +614,32 @@ export function useSocket(): UseSocketReturn {
         setWaitingForAction(false); // Clear waiting state when new message starts
         setCurrentRound(null); // Clear current round when new round starts
         setError(null);
+
+        // Initialize chunk tracking for this message
+        if (chunkTrackingRef.current?.timeoutId) {
+          clearTimeout(chunkTrackingRef.current.timeoutId);
+        }
+        chunkTrackingRef.current = {
+          chunkCount: 0,
+          lastChunkTime: Date.now(),
+          timeoutId: setTimeout(() => {
+            const tracking = chunkTrackingRef.current;
+            if (tracking) {
+              const timeSinceLastChunk = Date.now() - tracking.lastChunkTime;
+              if (timeSinceLastChunk > 10000) {
+                // 10 seconds without chunks
+                clientLogger.warn('No chunks received for extended period during streaming', {
+                  discussionId: data.discussionId,
+                  timeSinceLastChunk,
+                  chunkCount: tracking.chunkCount,
+                  accumulatedLength: tracking.accumulatedLength,
+                });
+              }
+            }
+          }, 10000), // Check after 10 seconds
+          accumulatedLength: 0,
+        };
+
         return currentDiscussionId; // Keep same discussionId
       });
     });
@@ -488,12 +668,43 @@ export function useSocket(): UseSocketReturn {
           return currentDiscussionId; // Don't change state
         }
 
+        // Update chunk tracking
+        if (chunkTrackingRef.current) {
+          chunkTrackingRef.current.chunkCount++;
+          chunkTrackingRef.current.lastChunkTime = Date.now();
+          chunkTrackingRef.current.accumulatedLength += data.chunk.length;
+        } else {
+          // Initialize tracking if it doesn't exist (shouldn't happen, but handle gracefully)
+          chunkTrackingRef.current = {
+            chunkCount: 1,
+            lastChunkTime: Date.now(),
+            timeoutId: null,
+            accumulatedLength: data.chunk.length,
+          };
+          clientLogger.warn('Chunk tracking initialized late (message-start may have been missed)', {
+            discussionId: data.discussionId,
+            chunkLength: data.chunk.length,
+          });
+        }
+
+        // Log chunk reception for debugging (only for first few and continuation chunks)
+        if (chunkTrackingRef.current.chunkCount <= 5 || chunkTrackingRef.current.chunkCount % 50 === 0) {
+          clientLogger.debug('Received message chunk', {
+            discussionId: data.discussionId,
+            chunkNumber: chunkTrackingRef.current.chunkCount,
+            chunkLength: data.chunk.length,
+            accumulatedLength: chunkTrackingRef.current.accumulatedLength,
+            chunkPreview: data.chunk.substring(0, 50),
+          });
+        }
+
         setCurrentMessage((prev) => {
           if (!prev) {
             // If we receive a chunk but don't have a current message, create one
             // This handles cases where message-start was missed or arrived out of order
             clientLogger.warn('Received message-chunk without current message, creating one', {
               discussionId: data.discussionId,
+              chunkLength: data.chunk.length,
             });
             // We don't know the persona or turn, so we'll create a minimal message
             // The message-complete event will have the full details
@@ -503,9 +714,10 @@ export function useSocket(): UseSocketReturn {
               content: data.chunk,
             };
           }
+          const newContent = prev.content + data.chunk;
           return {
             ...prev,
-            content: prev.content + data.chunk,
+            content: newContent,
           };
         });
         return currentDiscussionId; // Keep same discussionId
@@ -540,11 +752,102 @@ export function useSocket(): UseSocketReturn {
         // Note: We don't add to messages array here because rounds array is the source of truth.
         // The message-complete event is only used to clear the streaming state.
         // The actual message data will be included in the round-complete event.
+
+        // Verify accumulated content matches message-complete content
+        const tracking = chunkTrackingRef.current;
+        if (tracking) {
+          // Compare accumulated length with final message length
+          const finalLength = data.message.content.length;
+          const accumulatedLength = tracking.accumulatedLength;
+
+          // Log chunk accumulation summary
+          const lengthDifference = finalLength - accumulatedLength;
+          clientLogger.info('📊 Chunk accumulation summary', {
+            discussionId: data.discussionId,
+            persona: data.message.persona,
+            turn: data.message.turn,
+            chunkCount: tracking.chunkCount,
+            accumulatedLength,
+            finalLength,
+            difference: lengthDifference,
+            percentageComplete: accumulatedLength > 0 ? ((accumulatedLength / finalLength) * 100).toFixed(1) + '%' : '0%',
+          });
+
+          if (Math.abs(lengthDifference) > 10) {
+            // Allow small difference due to trimming, but log if significant
+            if (lengthDifference > 0) {
+              // Final message is longer - we're missing chunks
+              // Update currentMessage with final content to ensure UI displays complete message
+              clientLogger.error('⚠️ CHUNK LOSS DETECTED - Final message is longer than accumulated chunks', {
+                discussionId: data.discussionId,
+                persona: data.message.persona,
+                turn: data.message.turn,
+                accumulatedLength,
+                finalLength,
+                missingLength: lengthDifference,
+                chunkCount: tracking.chunkCount,
+                missingPercentage: ((lengthDifference / finalLength) * 100).toFixed(1) + '%',
+                note: 'Updating currentMessage with final content to ensure complete display.',
+              });
+              // Update currentMessage with final content before clearing
+              setCurrentMessage((prev) => {
+                if (prev && prev.persona === data.message.persona && prev.turn === data.message.turn) {
+                  return {
+                    ...prev,
+                    content: data.message.content, // Use final content as source of truth
+                  };
+                }
+                return prev;
+              });
+            } else {
+              // Final message is shorter - use accumulated chunks as source of truth
+              // The final message may be truncated by provider/server, but accumulated chunks
+              // represent the actual content received during streaming
+              clientLogger.warn('Final message is shorter than accumulated chunks (using accumulated content)', {
+                discussionId: data.discussionId,
+                persona: data.message.persona,
+                turn: data.message.turn,
+                accumulatedLength,
+                finalLength,
+                difference: Math.abs(lengthDifference),
+                chunkCount: tracking.chunkCount,
+                note: 'Using accumulated chunks as source of truth to prevent truncation',
+              });
+              // Use accumulated content (prev.content) as source of truth when final is shorter
+              setCurrentMessage((prev) => {
+                if (prev && prev.persona === data.message.persona && prev.turn === data.message.turn) {
+                  return {
+                    ...prev,
+                    content: prev.content, // Use accumulated chunks, not truncated final content
+                  };
+                }
+                return prev;
+              });
+            }
+          } else {
+            // Perfect match (within 10 chars tolerance)
+            clientLogger.debug('✅ Chunk accumulation matches final message perfectly', {
+              discussionId: data.discussionId,
+              persona: data.message.persona,
+              turn: data.message.turn,
+              length: finalLength,
+            });
+          }
+
+          // Clear timeout
+          if (tracking.timeoutId) {
+            clearTimeout(tracking.timeoutId);
+          }
+          chunkTrackingRef.current = null;
+        }
+
         clientLogger.debug('Message complete event received (clearing streaming state)', {
           discussionId: data.discussionId,
           messageId: data.message.id,
           persona: data.message.persona,
           turn: data.message.turn,
+          chunkCount: tracking?.chunkCount || 0,
+          finalLength: data.message.content.length,
         });
         setCurrentMessage(null);
         return currentDiscussionId; // Keep same discussionId
@@ -683,10 +986,13 @@ export function useSocket(): UseSocketReturn {
     // Moderator summary events removed - Moderator AI now participates in discussion
 
     socketInstance.on('error', (data: SocketErrorEvent) => {
+      // Use ref to get current discussionId value
+      const currentDiscussionId = discussionIdRef.current;
+
       clientLogger.error('Socket error event received', {
         message: data.message,
         socketId: socketInstance.id,
-        discussionId: data.discussionId || discussionId,
+        discussionId: data.discussionId || currentDiscussionId,
       });
 
       // Clear error if message is empty (error cleared)
@@ -695,31 +1001,52 @@ export function useSocket(): UseSocketReturn {
         return;
       }
 
+      // Handle specific error types with better user feedback
+      const errorCode = data.code || '';
+      const errorMessage = data.message;
+
+      // Enhanced error message with actionable information
+      let enhancedMessage = errorMessage;
+
+      // Add helpful context for common errors
+      if (errorMessage.toLowerCase().includes('active discussion')) {
+        enhancedMessage = `${errorMessage} You can resolve or delete your current discussion to start a new one.`;
+      } else if (errorCode.includes('RATE_LIMIT_EXCEEDED') || errorMessage.toLowerCase().includes('rate limit')) {
+        const rateLimitInfo = (data as any).rateLimit;
+        if (rateLimitInfo?.secondsUntilReset) {
+          enhancedMessage = `${errorMessage} Please wait ${rateLimitInfo.secondsUntilReset} second${rateLimitInfo.secondsUntilReset !== 1 ? 's' : ''} before trying again.`;
+        }
+      } else if (errorMessage.toLowerCase().includes('marked as resolved')) {
+        enhancedMessage = `${errorMessage} You can start a new discussion now.`;
+        setIsResolved(true);
+      }
+
       // Strict validation: only set error if it's for the current conversation
       // If no discussionId in error, it's a general error and should be shown
       if (!data.discussionId) {
         // General error (no discussionId) - show it
-        setError(data.message || 'An error occurred. Please try again.');
+        setError(enhancedMessage || 'An error occurred. Please try again.');
         return;
       }
 
       // Error has discussionId - only show if it matches active conversation
-      if (!discussionId) {
+      if (!currentDiscussionId) {
         clientLogger.warn('Received error for conversation but no active conversation', {
           received: data.discussionId,
         });
         return;
       }
 
-      if (data.discussionId !== discussionId) {
+      if (data.discussionId !== currentDiscussionId) {
         clientLogger.warn('Received error for different conversation', {
-          expected: discussionId,
+          expected: currentDiscussionId,
           received: data.discussionId,
         });
         return;
       }
 
-      setError(data.message || 'An error occurred. Please try again.');
+      // Use enhanced message if available, otherwise use original
+      setError(enhancedMessage || data.message || 'An error occurred. Please try again.');
     });
 
     setSocket(socketInstance);
@@ -727,7 +1054,7 @@ export function useSocket(): UseSocketReturn {
     return () => {
       socketInstance.close();
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // Empty dependency array is intentional - socket setup should only run once on mount
 
   /**
    * Helper to emit with acknowledgment and timeout
@@ -809,57 +1136,6 @@ export function useSocket(): UseSocketReturn {
       const errorMsg = `Failed to start dialogue: ${error instanceof Error ? error.message : 'Unknown error'}`;
       clientLogger.error('Error starting dialogue', {
         error: error instanceof Error ? error.message : String(error),
-        socketId: socket.id,
-      });
-      setError(errorMsg);
-    }
-  };
-
-  const sendUserInput = (input: string) => {
-    if (!socket || !isConnected) {
-      const errorMsg = 'Not connected to server. Please refresh the page.';
-      clientLogger.warn('Failed to send user input: not connected', { socketId: socket?.id });
-      setError(errorMsg);
-      return;
-    }
-
-    if (!discussionId) {
-      const errorMsg = 'No active discussion. Please start a new dialogue.';
-      clientLogger.warn('Failed to send user input: no discussion ID', { socketId: socket.id });
-      setError(errorMsg);
-      return;
-    }
-
-    if (!input || !input.trim()) {
-      clientLogger.warn('Failed to send user input: empty input', { discussionId });
-      setError('Please enter your input.');
-      return;
-    }
-
-    try {
-      clientLogger.info('Sending user input', {
-        discussionId,
-        inputLength: input.length,
-        socketId: socket.id,
-      });
-
-      emitWithAck('user-input', { discussionId, input })
-        .then(() => {
-          clientLogger.debug('User-input acknowledged by server');
-          setError(null);
-        })
-        .catch((ackError) => {
-          clientLogger.warn('User-input acknowledgment failed or timed out', {
-            error: ackError instanceof Error ? ackError.message : String(ackError),
-          });
-        });
-
-      socket.emit('user-input', { discussionId, input });
-    } catch (error) {
-      const errorMsg = `Failed to send user input: ${error instanceof Error ? error.message : 'Unknown error'}`;
-      clientLogger.error('Error sending user input', {
-        error: error instanceof Error ? error.message : String(error),
-        discussionId,
         socketId: socket.id,
       });
       setError(errorMsg);
@@ -953,26 +1229,6 @@ export function useSocket(): UseSocketReturn {
     socket.emit('proceed-dialogue', { discussionId });
   };
 
-  const generateSummary = () => {
-    if (!socket || !discussionId) {
-      clientLogger.warn('Cannot generate summary: socket or discussionId missing');
-      return;
-    }
-    const roundNumber = currentRound?.roundNumber;
-
-    emitWithAck('generate-summary', { discussionId, roundNumber })
-      .then(() => {
-        clientLogger.debug('Generate-summary acknowledged by server');
-      })
-      .catch((ackError) => {
-        clientLogger.warn('Generate-summary acknowledgment failed or timed out', {
-          error: ackError instanceof Error ? ackError.message : String(ackError),
-        });
-      });
-
-    socket.emit('generate-summary', { discussionId, roundNumber });
-  };
-
   const generateQuestions = () => {
     if (!socket || !discussionId) {
       clientLogger.warn('Cannot generate questions: socket or discussionId missing');
@@ -1021,10 +1277,8 @@ export function useSocket(): UseSocketReturn {
     isResolved,
     error,
     startDialogue,
-    sendUserInput,
     submitAnswers, // New
     proceedDialogue, // New
-    generateSummary, // New
     generateQuestions, // New
     reset,
     reconnect,

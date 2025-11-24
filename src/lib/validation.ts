@@ -137,11 +137,6 @@ export const dialogueRequestSchema = z.object({
   userId: z.string().regex(uuidRegex, 'Invalid user ID format').optional(),
 });
 
-export const userInputSchema = z.object({
-  discussionId: discussionIdSchema, // Required: discussionId is the primary identifier
-  input: z.string().min(1, 'Input is required'),
-});
-
 /**
  * Sanitize file name to prevent path traversal attacks
  * @param fileName - Original file name
@@ -183,4 +178,3 @@ export function sanitizeFileName(fileName: string): string {
 
 export type DialogueRequest = z.infer<typeof dialogueRequestSchema>;
 export type FileData = z.infer<typeof fileDataSchema>;
-export type UserInputRequest = z.infer<typeof userInputSchema>;

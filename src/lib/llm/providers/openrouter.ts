@@ -1,9 +1,10 @@
-import type { LLMMessage, LLMProvider, LLMConfig } from '../types';
+import type { LLMMessage, LLMProvider, LLMConfig } from '@/lib/llm/types';
 import { logger } from '@/lib/logger';
 import { extractTextFromPDF } from '@/lib/pdf-extraction';
 import { LLM_CONFIG } from '@/lib/config';
-import { SSEParser } from '../sse-parser';
+import { SSEParser } from '@/lib/llm/sse-parser';
 import { ErrorCode } from '@/lib/errors';
+import { BaseProvider, type StreamResult } from './base-provider';
 
 interface ErrorWithCode extends Error {
   code?: ErrorCode;
@@ -48,22 +49,25 @@ function isModelUnavailableError(responseStatus: number, errorMessage: string): 
   );
 }
 
-export class OpenRouterProvider implements LLMProvider {
+export class OpenRouterProvider extends BaseProvider implements LLMProvider {
   name = 'OpenRouter';
   private apiKey: string;
-  private config: LLMConfig;
   private fallbackModels: string[];
 
   constructor(apiKey: string, config: LLMConfig = {}) {
-    this.apiKey = apiKey;
-    this.config = {
+    super({
       model: config.model || 'openai/gpt-4o-mini',
       maxTokens: config.maxTokens || LLM_CONFIG.DEFAULT_MAX_TOKENS,
       temperature: config.temperature || 0.7,
-    };
+    });
+    this.apiKey = apiKey;
     this.fallbackModels = getFallbackModels();
   }
 
+  /**
+   * Override stream() to handle fallback models
+   * BaseProvider.stream() will handle completion logic
+   */
   async stream(messages: LLMMessage[], onChunk: (chunk: string) => void): Promise<string> {
     // Track attempted models for this request to prevent infinite loops
     const attemptedModels: string[] = [];
@@ -82,6 +86,7 @@ export class OpenRouterProvider implements LLMProvider {
     for (let i = 0; i < modelsToAttempt.length; i++) {
       const model = modelsToAttempt[i];
       const isRetry = i > 0;
+      const originalModel = this.config.model;
 
       if (isRetry) {
         logger.info('Retrying OpenRouter request with fallback model', {
@@ -94,8 +99,17 @@ export class OpenRouterProvider implements LLMProvider {
       }
 
       try {
-        return await this.streamWithModel(messages, onChunk, model);
+        // Temporarily update model for this attempt
+        this.config.model = model;
+        // Call parent stream() which handles completion
+        const result = await super.stream(messages, onChunk);
+        // Restore original model
+        this.config.model = originalModel;
+        return result;
       } catch (error) {
+        // Restore original model on error
+        this.config.model = originalModel;
+
         // Check if this is a model unavailable error
         if (error instanceof Error && (error as ErrorWithCode).code === ErrorCode.MODEL_UNAVAILABLE) {
           attemptedModels.push(model);
@@ -131,13 +145,14 @@ export class OpenRouterProvider implements LLMProvider {
   }
 
   /**
-   * Stream with a specific model (internal method)
+   * Internal streaming implementation for OpenRouter
+   * Uses this.config.model (which may be updated for fallback attempts)
    */
-  private async streamWithModel(
+  protected async streamInternal(
     messages: LLMMessage[],
-    onChunk: (chunk: string) => void,
-    model: string
-  ): Promise<string> {
+    onChunk: (chunk: string) => void
+  ): Promise<StreamResult> {
+    const model = this.config.model!;
     // Create AbortController for timeout
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), LLM_CONFIG.DEFAULT_TIMEOUT_MS);
@@ -217,7 +232,7 @@ export class OpenRouterProvider implements LLMProvider {
           max_tokens: this.config.maxTokens,
           temperature: this.config.temperature,
           stream: true,
-          stop: ['\n\n', '. ', '! ', '? '], // Stop sequences to encourage natural sentence endings
+          // No stop sequences - rely on max_tokens and completion logic to handle completion
         }),
         signal: controller.signal,
       });
@@ -312,7 +327,6 @@ export class OpenRouterProvider implements LLMProvider {
               }
             } else if (!parseResult.isComplete) {
               // Incomplete JSON - will be handled in next chunk
-              // Buffer is maintained by parser
               logger.debug('Incomplete JSON chunk, buffering for next chunk', {
                 provider: 'OpenRouter',
                 bufferSize: parser.getBuffer().length,
@@ -361,26 +375,27 @@ export class OpenRouterProvider implements LLMProvider {
         });
       }
 
-      // Log finish_reason for monitoring
-      logger.debug('OpenRouter API response completed', {
+      // CRITICAL: Log finish_reason with full context for debugging
+      const estimatedTokens = Math.ceil(fullContent.trim().length / 4);
+      logger.info('🔍 OPENROUTER RESPONSE COMPLETE: API streaming finished', {
         provider: 'OpenRouter',
         finishReason,
         contentLength: fullContent.length,
+        trimmedLength: fullContent.trim().length,
+        estimatedTokens,
+        maxTokens: this.config.maxTokens,
+        tokenUtilization: this.config.maxTokens ? `${((estimatedTokens / this.config.maxTokens) * 100).toFixed(1)}%` : 'N/A',
+        endsWithPunctuation: /[.!?]\s*$/.test(fullContent.trim()),
+        lastChars: fullContent.trim().slice(-100),
         model,
+        timestamp: new Date().toISOString(),
       });
 
-      // If response was cut off due to length, complete the thought
-      if (finishReason === 'length') {
-        logger.info('Response was truncated, completing thought', {
-          provider: 'OpenRouter',
-          initialLength: fullContent.length,
-          model,
-        });
-        const continuation = await this.completeThought(messages, fullContent, model);
-        return fullContent + continuation;
-      }
-
-      return fullContent;
+      return {
+        content: fullContent,
+        finishReason,
+        hadCompletion: false,
+      };
     } catch (error) {
       // Ensure timeout is always cleared
       clearTimeout(timeoutId);
@@ -419,16 +434,26 @@ export class OpenRouterProvider implements LLMProvider {
 
   /**
    * Complete a thought that was cut off due to token limit
+   * CRITICAL: onChunk must be provided to emit continuation chunks
    */
-  private async completeThought(
-    originalMessages: LLMMessage[],
+  protected async completeThoughtInternal(
     truncatedContent: string,
-    model: string
+    originalMessages: LLMMessage[],
+    onChunk?: (chunk: string) => void
   ): Promise<string> {
-    // Limit continuation to 20% of original max_tokens (rounded up, minimum 50)
-    const continuationTokens = Math.max(50, Math.ceil(this.config.maxTokens! * 0.2));
+    const model = this.config.model!;
+    // Calculate continuation tokens using base class method
+    const continuationTokens = this.calculateContinuationTokens(truncatedContent.trim().length);
 
-    // Process messages for continuation (similar to streamWithModel)
+    logger.info('Completing thought', {
+      provider: 'OpenRouter',
+      originalLength: truncatedContent.trim().length,
+      continuationTokens,
+      maxTokens: this.config.maxTokens,
+      model,
+    });
+
+    // Process messages for continuation (skip file processing to save tokens)
     const processedMessages = await Promise.all(
       originalMessages.map(async (msg) => {
         let content = msg.content;
@@ -444,6 +469,8 @@ export class OpenRouterProvider implements LLMProvider {
       })
     );
 
+    const completionPrompt = `Complete your previous thought. You were cut off. Finish your statement naturally in ${continuationTokens} tokens or less.`;
+
     const continuationMessages = [
       ...processedMessages,
       {
@@ -452,7 +479,7 @@ export class OpenRouterProvider implements LLMProvider {
       },
       {
         role: 'user' as const,
-        content: `Complete your previous thought. You were cut off. Finish your statement naturally in ${continuationTokens} tokens or less.`,
+        content: completionPrompt,
       },
     ];
 
@@ -483,7 +510,7 @@ export class OpenRouterProvider implements LLMProvider {
             max_tokens: continuationTokens,
             temperature: this.config.temperature,
             stream: true,
-            stop: ['\n\n', '. ', '! ', '? '],
+            // No stop sequences - rely on max_tokens to handle completion
           }),
           signal: controller.signal,
         });
@@ -526,6 +553,23 @@ export class OpenRouterProvider implements LLMProvider {
                 const content = parsed.choices?.[0]?.delta?.content || '';
                 if (content) {
                   continuation += content;
+                  // CRITICAL: Always emit continuation chunks if callback provided
+                  if (onChunk) {
+                    logger.debug('Emitting continuation chunk', {
+                      provider: 'OpenRouter',
+                      chunkLength: content.length,
+                      accumulatedContinuationLength: continuation.length,
+                      model,
+                    });
+                    onChunk(content);
+                  } else {
+                    logger.warn('⚠️ Continuation chunk generated but onChunk callback not provided', {
+                      provider: 'OpenRouter',
+                      chunkLength: content.length,
+                      model,
+                      note: 'This chunk will be lost if not emitted via callback',
+                    });
+                  }
                 }
               }
             }

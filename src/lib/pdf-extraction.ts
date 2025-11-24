@@ -4,6 +4,15 @@ const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 500;
 
 /**
+ * Interface for pdf-parse module
+ * Handles both default and named exports
+ */
+interface PDFParseModule {
+  default?: (buffer: Buffer) => Promise<{ text: string }>;
+  (buffer: Buffer): Promise<{ text: string }>;
+}
+
+/**
  * Check if error is transient (can be retried)
  */
 function isTransientError(error: unknown): boolean {
@@ -35,11 +44,9 @@ export async function extractTextFromPDF(base64Data: string): Promise<string> {
     try {
       // Dynamic import to ensure pdf-parse is only loaded server-side
       // This prevents Next.js from trying to bundle it for the client
-      const pdfParseModule = await import('pdf-parse');
+      const pdfParseModule = (await import('pdf-parse')) as unknown as PDFParseModule;
       // Handle both default and named exports - pdf-parse ESM doesn't have default
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pdfParse = ((pdfParseModule as any).default ||
-        pdfParseModule) as (buffer: Buffer) => Promise<{ text: string }>;
+      const pdfParse = pdfParseModule.default || pdfParseModule;
 
       // Remove data URI prefix if present
       const base64 = base64Data.replace(/^data:application\/pdf;base64,/, '');

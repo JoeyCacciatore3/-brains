@@ -68,7 +68,7 @@ export function createDatabase(): Database.Database {
       file_path_json TEXT NOT NULL,
       file_path_md TEXT NOT NULL,
       token_count INTEGER NOT NULL DEFAULT 0,
-      token_limit INTEGER NOT NULL DEFAULT 4800,
+      token_limit INTEGER NOT NULL DEFAULT 4000,
       summary TEXT,
       summary_created_at INTEGER,
       created_at INTEGER NOT NULL,
@@ -122,6 +122,26 @@ export function createDatabase(): Database.Database {
   } catch (error) {
     // Migration might have already run, ignore error
     logger.debug('Migration check for messages table columns', { error });
+  }
+
+  // Migration: Update token_limit default for existing discussions
+  try {
+    const discussionsWithOldLimit = db
+      .prepare('SELECT COUNT(*) as count FROM discussions WHERE token_limit = 4800')
+      .get() as { count: number };
+
+    if (discussionsWithOldLimit.count > 0) {
+      db.exec(`
+        UPDATE discussions
+        SET token_limit = 4000
+        WHERE token_limit = 4800
+      `);
+      logger.info('Migration: Updated token_limit from 4800 to 4000', {
+        updatedCount: discussionsWithOldLimit.count,
+      });
+    }
+  } catch (error) {
+    logger.debug('Migration check for token_limit', { error });
   }
 
   // Create indexes

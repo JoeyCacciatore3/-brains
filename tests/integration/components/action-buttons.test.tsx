@@ -4,9 +4,7 @@ import { ActionButtons } from '@/lib/components/dialogue/ActionButtons';
 
 describe('ActionButtons Component', () => {
   const mockOnProceed = vi.fn();
-  const mockOnGenerateSummary = vi.fn();
   const mockOnGenerateQuestions = vi.fn();
-  const mockOnUserInput = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -16,9 +14,7 @@ describe('ActionButtons Component', () => {
     render(
       <ActionButtons
         onProceed={mockOnProceed}
-        onGenerateSummary={mockOnGenerateSummary}
         onGenerateQuestions={mockOnGenerateQuestions}
-        onUserInput={mockOnUserInput}
         discussionId="test-discussion-id"
         isResolved={false}
         disabled={false}
@@ -26,8 +22,6 @@ describe('ActionButtons Component', () => {
     );
 
     expect(screen.getByText('Proceed')).toBeInTheDocument();
-    expect(screen.getByText('User Input')).toBeInTheDocument();
-    expect(screen.getByText('Generate Summary')).toBeInTheDocument();
     expect(screen.getByText('Generate Questions')).toBeInTheDocument();
   });
 
@@ -35,9 +29,7 @@ describe('ActionButtons Component', () => {
     render(
       <ActionButtons
         onProceed={mockOnProceed}
-        onGenerateSummary={mockOnGenerateSummary}
         onGenerateQuestions={mockOnGenerateQuestions}
-        onUserInput={mockOnUserInput}
         discussionId={null}
         isResolved={false}
         disabled={false}
@@ -51,9 +43,7 @@ describe('ActionButtons Component', () => {
     render(
       <ActionButtons
         onProceed={mockOnProceed}
-        onGenerateSummary={mockOnGenerateSummary}
         onGenerateQuestions={mockOnGenerateQuestions}
-        onUserInput={mockOnUserInput}
         discussionId="test-discussion-id"
         isResolved={true}
         disabled={false}
@@ -67,9 +57,7 @@ describe('ActionButtons Component', () => {
     render(
       <ActionButtons
         onProceed={mockOnProceed}
-        onGenerateSummary={mockOnGenerateSummary}
         onGenerateQuestions={mockOnGenerateQuestions}
-        onUserInput={mockOnUserInput}
         discussionId="test-discussion-id"
         isResolved={false}
         disabled={false}
@@ -82,51 +70,11 @@ describe('ActionButtons Component', () => {
     expect(mockOnProceed).toHaveBeenCalledTimes(1);
   });
 
-  it('should call onUserInput when User Input button is clicked', () => {
-    render(
-      <ActionButtons
-        onProceed={mockOnProceed}
-        onGenerateSummary={mockOnGenerateSummary}
-        onGenerateQuestions={mockOnGenerateQuestions}
-        onUserInput={mockOnUserInput}
-        discussionId="test-discussion-id"
-        isResolved={false}
-        disabled={false}
-      />
-    );
-
-    const userInputButton = screen.getByText('User Input');
-    fireEvent.click(userInputButton);
-
-    expect(mockOnUserInput).toHaveBeenCalledTimes(1);
-  });
-
-  it('should call onGenerateSummary when Generate Summary button is clicked', () => {
-    render(
-      <ActionButtons
-        onProceed={mockOnProceed}
-        onGenerateSummary={mockOnGenerateSummary}
-        onGenerateQuestions={mockOnGenerateQuestions}
-        onUserInput={mockOnUserInput}
-        discussionId="test-discussion-id"
-        isResolved={false}
-        disabled={false}
-      />
-    );
-
-    const generateSummaryButton = screen.getByText('Generate Summary');
-    fireEvent.click(generateSummaryButton);
-
-    expect(mockOnGenerateSummary).toHaveBeenCalledTimes(1);
-  });
-
   it('should call onGenerateQuestions when Generate Questions button is clicked', () => {
     render(
       <ActionButtons
         onProceed={mockOnProceed}
-        onGenerateSummary={mockOnGenerateSummary}
         onGenerateQuestions={mockOnGenerateQuestions}
-        onUserInput={mockOnUserInput}
         discussionId="test-discussion-id"
         isResolved={false}
         disabled={false}
@@ -143,9 +91,7 @@ describe('ActionButtons Component', () => {
     render(
       <ActionButtons
         onProceed={mockOnProceed}
-        onGenerateSummary={mockOnGenerateSummary}
         onGenerateQuestions={mockOnGenerateQuestions}
-        onUserInput={mockOnUserInput}
         discussionId="test-discussion-id"
         isResolved={false}
         disabled={false}
@@ -157,32 +103,11 @@ describe('ActionButtons Component', () => {
     expect(proceedButton).toBeDisabled();
   });
 
-  it('should show loading state for Generate Summary when isGeneratingSummary is true', () => {
-    render(
-      <ActionButtons
-        onProceed={mockOnProceed}
-        onGenerateSummary={mockOnGenerateSummary}
-        onGenerateQuestions={mockOnGenerateQuestions}
-        onUserInput={mockOnUserInput}
-        discussionId="test-discussion-id"
-        isResolved={false}
-        disabled={false}
-        isGeneratingSummary={true}
-      />
-    );
-
-    expect(screen.getByText('Generating...')).toBeInTheDocument();
-    const generateSummaryButton = screen.getByText('Generating...').closest('button');
-    expect(generateSummaryButton).toBeDisabled();
-  });
-
   it('should show loading state for Generate Questions when isGeneratingQuestions is true', () => {
     render(
       <ActionButtons
         onProceed={mockOnProceed}
-        onGenerateSummary={mockOnGenerateSummary}
         onGenerateQuestions={mockOnGenerateQuestions}
-        onUserInput={mockOnUserInput}
         discussionId="test-discussion-id"
         isResolved={false}
         disabled={false}
@@ -190,10 +115,8 @@ describe('ActionButtons Component', () => {
       />
     );
 
-    expect(screen.getAllByText('Generating...')[0]).toBeInTheDocument();
-    const generateQuestionsButton = screen
-      .getAllByText('Generating...')
-      .find((el) => el.textContent?.includes('Generating...'))?.closest('button');
+    expect(screen.getByText('Generating...')).toBeInTheDocument();
+    const generateQuestionsButton = screen.getByText('Generating...').closest('button');
     expect(generateQuestionsButton).toBeDisabled();
   });
 
@@ -201,9 +124,7 @@ describe('ActionButtons Component', () => {
     render(
       <ActionButtons
         onProceed={mockOnProceed}
-        onGenerateSummary={mockOnGenerateSummary}
         onGenerateQuestions={mockOnGenerateQuestions}
-        onUserInput={mockOnUserInput}
         discussionId="test-discussion-id"
         isResolved={false}
         disabled={false}

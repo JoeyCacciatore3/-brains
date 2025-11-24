@@ -124,12 +124,13 @@ export async function generateComprehensiveSummary(
     }, 0);
 
     // Format rounds for summarization
+    // Order: Analyzer -> Solver -> Moderator
     const roundsText = rounds
       .map((round) => {
         return `[Round ${round.roundNumber}]
-${round.solverResponse.persona}: ${round.solverResponse.content}
-
 ${round.analyzerResponse.persona}: ${round.analyzerResponse.content}
+
+${round.solverResponse.persona}: ${round.solverResponse.content}
 
 ${round.moderatorResponse.persona}: ${round.moderatorResponse.content}
 

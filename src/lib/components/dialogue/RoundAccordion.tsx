@@ -15,13 +15,20 @@ interface RoundAccordionProps {
 }
 
 // Helper function to validate a round
-function isValidRound(round: any): round is DiscussionRound {
+function isValidRound(round: unknown): round is DiscussionRound {
   if (!round || typeof round !== 'object') return false;
-  if (typeof round.roundNumber !== 'number') return false;
-  if (typeof round.timestamp !== 'string') return false;
-  if (!round.solverResponse || typeof round.solverResponse.content !== 'string') return false;
-  if (!round.analyzerResponse || typeof round.analyzerResponse.content !== 'string') return false;
-  if (!round.moderatorResponse || typeof round.moderatorResponse.content !== 'string') return false;
+  const roundObj = round as Record<string, unknown>;
+  if (typeof roundObj.roundNumber !== 'number') return false;
+  if (typeof roundObj.timestamp !== 'string') return false;
+  if (!roundObj.solverResponse || typeof roundObj.solverResponse !== 'object') return false;
+  if (!roundObj.analyzerResponse || typeof roundObj.analyzerResponse !== 'object') return false;
+  if (!roundObj.moderatorResponse || typeof roundObj.moderatorResponse !== 'object') return false;
+  const solverResp = roundObj.solverResponse as Record<string, unknown>;
+  const analyzerResp = roundObj.analyzerResponse as Record<string, unknown>;
+  const moderatorResp = roundObj.moderatorResponse as Record<string, unknown>;
+  if (typeof solverResp.content !== 'string') return false;
+  if (typeof analyzerResp.content !== 'string') return false;
+  if (typeof moderatorResp.content !== 'string') return false;
   return true;
 }
 
@@ -118,21 +125,21 @@ export function RoundAccordion({
           return (
             <div
               key={round.roundNumber}
-              className={`border-2 rounded overflow-hidden transition-all duration-300 ${
+              className={`border rounded-lg overflow-hidden transition-all duration-300 ${
                 isExpanded
-                  ? 'border-green-500 bg-black shadow-lg'
-                  : 'border-green-500 bg-black hover:border-green-400'
+                  ? 'border-gray-600/60 bg-gray-800/40 shadow-lg'
+                  : 'border-gray-600/50 bg-gray-800/40 hover:border-gray-600/70 hover:bg-gray-800/50'
               }`}
             >
               <button
                 onClick={() => toggleRound(round.roundNumber)}
-                className="w-full px-4 py-3 flex items-center justify-between hover:bg-black transition-colors"
+                className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-800/30 transition-colors"
               >
                 <div className="flex items-center gap-3 flex-1 min-w-0">
                   {isExpanded ? (
-                    <ChevronDown className="w-5 h-5 text-green-500 flex-shrink-0 transition-transform" />
+                    <ChevronDown className="w-5 h-5 text-gray-400 flex-shrink-0 transition-transform" />
                   ) : (
-                    <ChevronUp className="w-5 h-5 text-green-500 flex-shrink-0 transition-transform" />
+                    <ChevronUp className="w-5 h-5 text-gray-400 flex-shrink-0 transition-transform" />
                   )}
                   <span className="text-white font-medium flex-shrink-0">
                     Round {round.roundNumber}
@@ -142,7 +149,7 @@ export function RoundAccordion({
                   <div className="flex items-center gap-2 flex-shrink-0">
                     {isSummarized && (
                       <span
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-black text-green-500 border-2 border-green-500"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-gray-700/50 text-gray-300 border border-gray-600/50"
                         title="This round has been summarized"
                       >
                         <FileText className="w-3 h-3" />
@@ -151,7 +158,7 @@ export function RoundAccordion({
                     )}
                     {hasQuestions && (
                       <span
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-black text-green-500 border-2 border-green-500"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-gray-700/50 text-gray-300 border border-gray-600/50"
                         title="This round has questions"
                       >
                         <HelpCircle className="w-3 h-3" />
@@ -168,14 +175,14 @@ export function RoundAccordion({
               </button>
 
               {isExpanded && (
-                <div className="px-4 pb-4 pt-2 border-t-2 border-green-500 animate-fade-in">
+                <div className="px-4 pb-4 pt-2 border-t border-gray-600/50 animate-fade-in">
                   <RoundDisplay
                     round={round}
                     isCurrentRound={false}
                   />
 
                   {/* Per-Round Action Buttons */}
-                  <div className="mt-4 flex flex-wrap gap-2 pt-3 border-t-2 border-green-500">
+                  <div className="mt-4 flex flex-wrap gap-2 pt-3 border-t border-gray-600/50">
                     <Button
                       variant="secondary"
                       onClick={(e) => {

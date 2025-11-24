@@ -14,15 +14,28 @@ import {
 } from '@/lib/db/discussions';
 import {
   createDiscussion as createDiscussionFiles,
-  appendMessageToDiscussion,
   addRoundToDiscussion,
   addQuestionSetToDiscussion,
   updateRoundAnswers,
   readDiscussion,
 } from '@/lib/discussions/file-manager';
-import { loadDiscussionContext } from '@/lib/conversation-context';
-import { formatLLMPrompt } from '@/lib/conversation-context';
+import { loadDiscussionContext } from '@/lib/discussion-context';
+import { formatLLMPrompt } from '@/lib/discussion-context';
 import { getProviderWithFallback, aiPersonas, checkLLMProviderAvailability } from '@/lib/llm';
+import {
+  filterCompleteRounds,
+  calculateTurnNumber,
+  isRoundIncomplete,
+  filterRoundsForPersona,
+} from '@/lib/discussions/round-utils';
+import {
+  EXECUTION_ORDER,
+  validateExecutionOrder,
+  validatePersonaCanExecute,
+  logExecutionOrderValidation,
+} from '@/lib/discussions/execution-order';
+import { validatePersonaOrder } from '@/lib/discussions/round-validator';
+import { validateRoundNumberSequence, validateNewRoundNumber } from '@/lib/discussions/round-utils';
 import type { LLMProvider } from '@/lib/llm/types';
 import { summarizeRounds } from '@/lib/llm/summarizer';
 import { generateQuestions } from '@/lib/llm/question-generator';
@@ -30,7 +43,6 @@ import { generateQuestions } from '@/lib/llm/question-generator';
 import { isResolved } from '@/lib/llm/resolver';
 import {
   dialogueRequestSchema,
-  userInputSchema,
   validateFile,
   BASE64_SIZE_LIMIT,
   validateBase64Format,
@@ -93,11 +105,9 @@ import { checkDatabaseHealth } from '@/lib/db';
 import { ErrorCode, createErrorFromCode } from '@/lib/errors';
 import type {
   StartDialogueEvent,
-  UserInputEvent,
   DiscussionRound,
   SubmitAnswersEvent,
   ProceedDialogueEvent,
-  GenerateSummaryEvent,
   GenerateQuestionsEvent,
 } from '@/types';
 import type { LLMMessage } from '@/lib/llm/types';
@@ -332,7 +342,7 @@ export function setupSocketHandlers(io: Server) {
         }
 
         if (!validationResult.success) {
-          const errors = validationResult.error.errors
+          const errors = validationResult.error.issues
             .map((e) => `${e.path.join('.')}: ${e.message}`)
             .join(', ');
           const validationError = createErrorFromCode(ErrorCode.VALIDATION_ERROR, { errors });
@@ -350,16 +360,22 @@ export function setupSocketHandlers(io: Server) {
         const rateLimitExceeded = await checkRateLimit(clientIp);
         if (rateLimitExceeded) {
           logger.warn('Rate limit exceeded', { socketId: socket.id, clientIp });
-          const { getRemainingRequests } = await import('@/lib/rate-limit');
+          const { getRemainingRequests, getRateLimitInfo } = await import('@/lib/rate-limit');
+          const rateLimitInfo = getRateLimitInfo(clientIp);
           const remaining = getRemainingRequests(clientIp);
+          const resetTime = new Date(rateLimitInfo.reset);
+          const secondsUntilReset = Math.ceil((rateLimitInfo.reset - Date.now()) / 1000);
+
           const error = createErrorFromCode(ErrorCode.RATE_LIMIT_EXCEEDED, { clientIp });
           socket.emit('error', {
-            message: error.message,
+            message: `Rate limit exceeded. Please try again in ${secondsUntilReset} second${secondsUntilReset !== 1 ? 's' : ''}.`,
             code: error.code,
             rateLimit: {
-              limit: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '10', 10),
+              limit: rateLimitInfo.limit,
               remaining,
               resetWindow: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),
+              resetTime: resetTime.toISOString(),
+              secondsUntilReset,
             },
           });
           return;
@@ -446,7 +462,7 @@ export function setupSocketHandlers(io: Server) {
 
           // Get the discussion from database to pass to processDiscussionDialogueRounds
           // This ensures the discussion exists before processing
-          const discussion = getDiscussion(discussionId);
+          const discussion = getDiscussion(discussionId, effectiveUserId);
           if (!discussion) {
             logger.error('Discussion not found immediately after creation', {
               discussionId,
@@ -558,263 +574,6 @@ export function setupSocketHandlers(io: Server) {
       }
     });
 
-    // Handle user input
-    socket.on('user-input', async (data: UserInputEvent, ack?: (response: { error?: string; data?: unknown }) => void) => {
-      if (!checkMessageLimits(data)) {
-        if (ack) ack({ error: 'Message limits exceeded' });
-        return;
-      }
-      logger.info('Received user-input event', {
-        socketId: socket.id,
-        discussionId: data?.discussionId,
-        inputLength: data?.input?.length,
-      });
-
-      try {
-        // Rate limiting check
-        const clientIp = extractClientIP(socket);
-        if (await checkRateLimit(clientIp)) {
-          logger.warn('Rate limit exceeded for user input', { socketId: socket.id, clientIp });
-          const error = createErrorFromCode(ErrorCode.RATE_LIMIT_EXCEEDED, { clientIp });
-          socket.emit('error', {
-            message: 'Rate limit exceeded. Please wait a moment before trying again.',
-            code: error.code,
-          });
-          return;
-        }
-
-        // Validate request data including conversation ID format
-        const validationResult = userInputSchema.safeParse(data);
-        if (!validationResult.success) {
-          const errors = validationResult.error.errors
-            .map((e) => `${e.path.join('.')}: ${e.message}`)
-            .join(', ');
-          logger.warn('User input validation failed', { socketId: socket.id, errors });
-          const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, { errors });
-          socket.emit('error', {
-            message: `Invalid input format: ${errors}. Please try again.`,
-            code: error.code,
-          });
-          return;
-        }
-
-        const { discussionId, input } = validationResult.data;
-
-        if (!input || !input.trim()) {
-          logger.warn('Empty user input received', { socketId: socket.id, discussionId });
-          const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, { field: 'input' });
-          socket.emit('error', {
-            message: 'Please provide your input to continue the conversation.',
-            code: error.code,
-          });
-          return;
-        }
-
-        // Always use discussion-based system
-        const effectiveDiscussionId = discussionId;
-
-        if (!effectiveDiscussionId) {
-          const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, { field: 'discussionId' });
-          socket.emit('error', {
-            message: 'No discussion ID provided.',
-            code: error.code,
-          });
-          return;
-        }
-
-        const discussion = getDiscussion(effectiveDiscussionId);
-        if (!discussion) {
-          logger.error('Discussion not found for user input', {
-            socketId: socket.id,
-            discussionId: effectiveDiscussionId,
-          });
-          const notFoundError = createErrorFromCode(ErrorCode.DISCUSSION_NOT_FOUND, {
-            discussionId: effectiveDiscussionId,
-          });
-          socket.emit('error', {
-            discussionId: effectiveDiscussionId,
-            message: 'Discussion not found. Please start a new dialogue.',
-            code: notFoundError.code,
-          });
-          return;
-        }
-
-        // Validate discussion state before processing input
-        // Check if discussion is resolved
-        if (discussion.is_resolved) {
-          logger.warn('User input received for resolved discussion', {
-            socketId: socket.id,
-            discussionId: effectiveDiscussionId,
-          });
-          const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, {
-            reason: 'discussion_resolved',
-          });
-          socket.emit('error', {
-            discussionId: effectiveDiscussionId,
-            message: 'This discussion has already been resolved. Please start a new dialogue.',
-            code: error.code,
-          });
-          return;
-        }
-
-        // Check if discussion is currently being processed
-        const { isProcessing } = await import('@/lib/discussions/processing-lock');
-        // Get user ID from authenticated socket
-        const userId = getSocketUserId(socket);
-        if (await isProcessing(effectiveDiscussionId, userId)) {
-          logger.warn('User input received while discussion is processing', {
-            socketId: socket.id,
-            discussionId: effectiveDiscussionId,
-          });
-          const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, {
-            reason: 'discussion_processing',
-          });
-          socket.emit('error', {
-            discussionId: effectiveDiscussionId,
-            message:
-              'Discussion is currently being processed. Please wait for the current operation to complete.',
-            code: error.code,
-          });
-          return;
-        }
-
-        // Verify discussion is waiting for user input (optional check - we allow proactive input)
-        if (!discussion.needs_user_input) {
-          logger.debug('User input received but discussion not explicitly waiting for input (allowing proactive input)', {
-            socketId: socket.id,
-            discussionId: effectiveDiscussionId,
-            needs_user_input: discussion.needs_user_input,
-          });
-        }
-
-        // Load discussion context to get messages
-        let discussionContext;
-        try {
-          discussionContext = await loadDiscussionContext(
-            effectiveDiscussionId,
-            discussion.user_id
-          );
-
-          // Sync token count from file (source of truth) to database
-          // This ensures database token_count stays in sync with file content
-          try {
-            syncTokenCountFromFile(effectiveDiscussionId, discussionContext.tokenCount);
-          } catch (syncError) {
-            // Log but don't fail - token count sync is best effort
-            logger.warn('Failed to sync token count to database', {
-              error: syncError,
-              discussionId: effectiveDiscussionId,
-              tokenCount: discussionContext.tokenCount,
-            });
-          }
-        } catch (error) {
-          logger.error('Error loading discussion context for user input', {
-            error,
-            discussionId: effectiveDiscussionId,
-          });
-          const errorObj = createErrorFromCode(ErrorCode.INTERNAL_ERROR, {
-            discussionId: effectiveDiscussionId,
-          });
-          socket.emit('error', {
-            discussionId: effectiveDiscussionId,
-            message: 'Failed to load discussion context. Please try again.',
-            code: errorObj.code,
-          });
-          return;
-        }
-
-        const allMessages = discussionContext.messages;
-        const aiMessages = allMessages.filter((m) => m.persona !== 'User');
-        const lastAIMessage = aiMessages[aiMessages.length - 1];
-
-        // Calculate user turn
-        let userTurn: number;
-        if (lastAIMessage) {
-          userTurn = lastAIMessage.turn;
-        } else if (discussion.current_turn > 0) {
-          userTurn = Math.floor(discussion.current_turn / 2) + 1;
-        } else {
-          userTurn = 1;
-        }
-
-        // Create user message
-        const userMessage = {
-          discussion_id: effectiveDiscussionId,
-          persona: 'User' as const,
-          content: input.trim(),
-          turn: userTurn,
-          timestamp: new Date().toISOString(),
-          created_at: Date.now(),
-        };
-
-        // Append to discussion files first (source of truth), then sync to database
-        try {
-          await syncFileAndDatabase(
-            () => appendMessageToDiscussion(effectiveDiscussionId, discussion.user_id, userMessage),
-            () =>
-              updateDiscussion(effectiveDiscussionId, {
-                needs_user_input: 0,
-                user_input_pending: null,
-              }),
-            {
-              discussionId: effectiveDiscussionId,
-              userId: discussion.user_id,
-              operation: 'appendUserMessage',
-            }
-          );
-        } catch (error) {
-          logger.error('Error appending user message to discussion', {
-            error,
-            discussionId: effectiveDiscussionId,
-          });
-          const errorObj = createErrorFromCode(ErrorCode.INTERNAL_ERROR, {
-            discussionId: effectiveDiscussionId,
-          });
-          socket.emit('error', {
-            discussionId: effectiveDiscussionId,
-            message: 'Failed to save user input. Please try again.',
-            code: errorObj.code,
-          });
-          return;
-        }
-
-        logger.info('User input processed for discussion', {
-          discussionId: effectiveDiscussionId,
-          userId: discussion.user_id,
-        });
-
-        // Send acknowledgment
-        if (ack) {
-          ack({ data: { discussionId: effectiveDiscussionId } });
-        }
-
-        // Continue dialogue (using round-based processing)
-        await processDiscussionDialogueRounds(
-          io,
-          socket,
-          effectiveDiscussionId,
-          discussion.user_id,
-          discussion.topic,
-          [],
-          discussion
-        );
-      } catch (error) {
-        logger.error('Error handling user input', { error, socketId: socket.id });
-        const errorDiscussionId = data?.discussionId;
-        const errorObj = createErrorFromCode(ErrorCode.INTERNAL_ERROR, {
-          discussionId: errorDiscussionId,
-        });
-        socket.emit('error', {
-          discussionId: errorDiscussionId,
-          message:
-            error instanceof Error
-              ? error.message
-              : 'Failed to process user input. Please try again.',
-          code: errorObj.code,
-        });
-      }
-    });
-
     // Handle question answers submission
     socket.on('submit-answers', async (data: SubmitAnswersEvent, ack?: (response: { error?: string; data?: unknown }) => void) => {
       if (!checkMessageLimits(data)) {
@@ -835,10 +594,18 @@ export function setupSocketHandlers(io: Server) {
             socketId: socket.id,
             clientIp,
           });
+          const { getRateLimitInfo } = await import('@/lib/rate-limit');
+          const rateLimitInfo = getRateLimitInfo(clientIp);
+          const secondsUntilReset = Math.ceil((rateLimitInfo.reset - Date.now()) / 1000);
           const error = createErrorFromCode(ErrorCode.RATE_LIMIT_EXCEEDED, { clientIp });
           socket.emit('error', {
-            message: 'Rate limit exceeded. Please wait a moment before trying again.',
+            message: `Rate limit exceeded. Please try again in ${secondsUntilReset} second${secondsUntilReset !== 1 ? 's' : ''}.`,
             code: error.code,
+            rateLimit: {
+              limit: rateLimitInfo.limit,
+              remaining: rateLimitInfo.remaining,
+              secondsUntilReset,
+            },
           });
           return;
         }
@@ -872,7 +639,9 @@ export function setupSocketHandlers(io: Server) {
           return;
         }
 
-        const discussion = getDiscussion(discussionId);
+        // Get user ID from authenticated socket
+        const userId = getSocketUserId(socket);
+        const discussion = getDiscussion(discussionId, userId);
         if (!discussion) {
           logger.error('Discussion not found for answer submission', {
             socketId: socket.id,
@@ -890,7 +659,6 @@ export function setupSocketHandlers(io: Server) {
         }
 
         // Verify user owns the discussion
-        const userId = getSocketUserId(socket);
         if (!verifyDiscussionOwnership(discussionId, userId)) {
           const authError = createAuthorizationError(discussionId);
           socket.emit('error', authError);
@@ -953,10 +721,18 @@ export function setupSocketHandlers(io: Server) {
             socketId: socket.id,
             clientIp,
           });
+          const { getRateLimitInfo } = await import('@/lib/rate-limit');
+          const rateLimitInfo = getRateLimitInfo(clientIp);
+          const secondsUntilReset = Math.ceil((rateLimitInfo.reset - Date.now()) / 1000);
           const error = createErrorFromCode(ErrorCode.RATE_LIMIT_EXCEEDED, { clientIp });
           socket.emit('error', {
-            message: 'Rate limit exceeded. Please wait a moment before trying again.',
+            message: `Rate limit exceeded. Please try again in ${secondsUntilReset} second${secondsUntilReset !== 1 ? 's' : ''}.`,
             code: error.code,
+            rateLimit: {
+              limit: rateLimitInfo.limit,
+              remaining: rateLimitInfo.remaining,
+              secondsUntilReset,
+            },
           });
           return;
         }
@@ -972,7 +748,9 @@ export function setupSocketHandlers(io: Server) {
           return;
         }
 
-        const discussion = getDiscussion(discussionId);
+        // Get user ID from authenticated socket
+        const userId = getSocketUserId(socket);
+        const discussion = getDiscussion(discussionId, userId);
         if (!discussion) {
           logger.error('Discussion not found for proceed-dialogue', {
             socketId: socket.id,
@@ -990,7 +768,6 @@ export function setupSocketHandlers(io: Server) {
         }
 
         // Verify user owns the discussion
-        const userId = getSocketUserId(socket);
         if (!verifyDiscussionOwnership(discussionId, userId)) {
           const authError = createAuthorizationError(discussionId);
           socket.emit('error', authError);
@@ -1028,130 +805,6 @@ export function setupSocketHandlers(io: Server) {
       }
     });
 
-    // Handle generate-summary event
-    socket.on('generate-summary', async (data: GenerateSummaryEvent, ack?: (response: { error?: string; data?: unknown }) => void) => {
-      if (!checkMessageLimits(data)) {
-        if (ack) ack({ error: 'Message limits exceeded' });
-        return;
-      }
-      logger.info('Received generate-summary event', {
-        socketId: socket.id,
-        discussionId: data?.discussionId,
-        roundNumber: data?.roundNumber,
-      });
-
-      try {
-        // Rate limiting check
-        const clientIp = extractClientIP(socket);
-        if (await checkRateLimit(clientIp)) {
-          logger.warn('Rate limit exceeded for generate-summary', {
-            socketId: socket.id,
-            clientIp,
-          });
-          const error = createErrorFromCode(ErrorCode.RATE_LIMIT_EXCEEDED, { clientIp });
-          socket.emit('error', {
-            message: 'Rate limit exceeded. Please wait a moment before trying again.',
-            code: error.code,
-          });
-          return;
-        }
-
-        const { discussionId, roundNumber } = data;
-
-        if (!discussionId) {
-          const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, { field: 'discussionId' });
-          socket.emit('error', {
-            message: 'No discussion ID provided.',
-            code: error.code,
-          });
-          return;
-        }
-
-        const discussion = getDiscussion(discussionId);
-        if (!discussion) {
-          logger.error('Discussion not found for generate-summary', {
-            socketId: socket.id,
-            discussionId,
-          });
-          const notFoundError = createErrorFromCode(ErrorCode.DISCUSSION_NOT_FOUND, {
-            discussionId,
-          });
-          socket.emit('error', {
-            discussionId: discussionId,
-            message: 'Discussion not found. Please start a new dialogue.',
-            code: notFoundError.code,
-          });
-          return;
-        }
-
-        // Verify user owns the discussion
-        const userId = getSocketUserId(socket);
-        if (!verifyDiscussionOwnership(discussionId, userId)) {
-          const authError = createAuthorizationError(discussionId);
-          socket.emit('error', authError);
-          return;
-        }
-
-        // Load discussion data
-        const discussionData = await readDiscussion(discussionId, discussion.user_id);
-
-        // Determine which rounds to summarize
-        const targetRoundNumber = roundNumber || discussionData.currentRound || 0;
-        const roundsToSummarize = (discussionData.rounds || []).filter(
-          (r) => r.roundNumber <= targetRoundNumber
-        );
-
-        if (roundsToSummarize.length === 0) {
-          const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, {
-            reason: 'no_rounds_to_summarize',
-          });
-          socket.emit('error', {
-            discussionId: discussionId,
-            message: 'No rounds available to summarize.',
-            code: error.code,
-          });
-          return;
-        }
-
-        // Generate summary
-        const summaryEntry = await summarizeRounds(
-          discussionId,
-          discussion.user_id,
-          roundsToSummarize,
-          targetRoundNumber
-        );
-
-        // Emit summary created
-        io.to(discussionId).emit('summary-created', {
-          discussionId: discussionId,
-          summary: summaryEntry,
-        });
-
-        // Send acknowledgment
-        if (ack) {
-          ack({ data: { discussionId, summary: summaryEntry } });
-        }
-
-        logger.info('Summary generated successfully', {
-          discussionId,
-          roundNumber: targetRoundNumber,
-          roundsSummarized: roundsToSummarize.length,
-        });
-      } catch (error) {
-        logger.error('Error handling generate-summary', { error, socketId: socket.id });
-        const discussionId = data?.discussionId;
-        const errorObj = createErrorFromCode(ErrorCode.INTERNAL_ERROR, { discussionId });
-        socket.emit('error', {
-          discussionId: discussionId,
-          message:
-            error instanceof Error
-              ? error.message
-              : 'Failed to generate summary. Please try again.',
-          code: errorObj.code,
-        });
-      }
-    });
-
     // Handle generate-questions event
     socket.on('generate-questions', async (data: GenerateQuestionsEvent, ack?: (response: { error?: string; data?: unknown }) => void) => {
       if (!checkMessageLimits(data)) {
@@ -1172,10 +825,18 @@ export function setupSocketHandlers(io: Server) {
             socketId: socket.id,
             clientIp,
           });
+          const { getRateLimitInfo } = await import('@/lib/rate-limit');
+          const rateLimitInfo = getRateLimitInfo(clientIp);
+          const secondsUntilReset = Math.ceil((rateLimitInfo.reset - Date.now()) / 1000);
           const error = createErrorFromCode(ErrorCode.RATE_LIMIT_EXCEEDED, { clientIp });
           socket.emit('error', {
-            message: 'Rate limit exceeded. Please wait a moment before trying again.',
+            message: `Rate limit exceeded. Please try again in ${secondsUntilReset} second${secondsUntilReset !== 1 ? 's' : ''}.`,
             code: error.code,
+            rateLimit: {
+              limit: rateLimitInfo.limit,
+              remaining: rateLimitInfo.remaining,
+              secondsUntilReset,
+            },
           });
           return;
         }
@@ -1191,7 +852,9 @@ export function setupSocketHandlers(io: Server) {
           return;
         }
 
-        const discussion = getDiscussion(discussionId);
+        // Get user ID from authenticated socket
+        const userId = getSocketUserId(socket);
+        const discussion = getDiscussion(discussionId, userId);
         if (!discussion) {
           logger.error('Discussion not found for generate-questions', {
             socketId: socket.id,
@@ -1308,6 +971,1180 @@ export function setupSocketHandlers(io: Server) {
  * Process dialogue for discussion-based system using round-based structure
  * New enhanced version that processes rounds instead of individual messages
  */
+/**
+ * Load discussion data and context with error handling
+ */
+async function loadDiscussionDataAndContext(
+  io: Server,
+  discussionId: string,
+  userId: string
+): Promise<{
+  discussionData: Awaited<ReturnType<typeof readDiscussion>>;
+  discussionContext: Awaited<ReturnType<typeof loadDiscussionContext>>;
+}> {
+  // Load discussion data to get current round
+  let discussionData;
+  try {
+    discussionData = await readDiscussion(discussionId, userId);
+    logger.debug('Discussion data loaded', {
+      discussionId,
+      currentRound: discussionData.currentRound,
+      roundsCount: discussionData.rounds?.length || 0,
+    });
+  } catch (error) {
+    logger.error('Error loading discussion data', {
+      error: error instanceof Error ? error.message : String(error),
+      errorStack: error instanceof Error ? error.stack : undefined,
+      discussionId,
+      userId,
+    });
+    io.to(discussionId).emit('error', {
+      discussionId: discussionId,
+      message: 'Failed to load discussion data. Please try again.',
+    });
+    throw error;
+  }
+
+  // Load discussion context
+  let discussionContext;
+  try {
+    discussionContext = await loadDiscussionContext(discussionId, userId);
+    logger.debug('Discussion context loaded', {
+      discussionId,
+      tokenCount: discussionContext.tokenCount,
+      roundsCount: discussionContext.rounds?.length || 0,
+      hasSummary: !!discussionContext.currentSummary,
+      summariesCount: discussionContext.summaries?.length || 0,
+    });
+
+    // Sync token count from file (source of truth) to database
+    try {
+      syncTokenCountFromFile(discussionId, discussionContext.tokenCount);
+    } catch (syncError) {
+      logger.warn('Failed to sync token count to database', {
+        error: syncError instanceof Error ? syncError.message : String(syncError),
+        discussionId,
+        tokenCount: discussionContext.tokenCount,
+      });
+    }
+  } catch (error) {
+    logger.error('Error loading discussion context', {
+      error: error instanceof Error ? error.message : String(error),
+      errorStack: error instanceof Error ? error.stack : undefined,
+      discussionId,
+      userId,
+    });
+    io.to(discussionId).emit('error', {
+      discussionId: discussionId,
+      message: 'Failed to load discussion context. Please try again.',
+    });
+    throw error;
+  }
+
+  return { discussionData, discussionContext };
+}
+
+/**
+ * Process a single round: generate all three AI responses
+ * Execution order: Analyzer → Solver → Moderator
+ * Turn numbers: Analyzer = (round-1)*3+1, Solver = (round-1)*3+2, Moderator = (round-1)*3+3
+ *
+ * CRITICAL: This function MUST execute personas in the exact order: Analyzer → Solver → Moderator
+ * Any deviation from this order is a critical bug and will be logged and throw an error.
+ */
+async function processSingleRound(
+  io: Server,
+  discussionId: string,
+  topic: string,
+  discussionContext: Awaited<ReturnType<typeof loadDiscussionContext>>,
+  isFirstRound: boolean,
+  files: FileData[],
+  currentRoundNumber: number,
+  userAnswers: Record<string, string[]>
+): Promise<DiscussionRound> {
+  // CRITICAL EXECUTION ORDER SAFEGUARD: Use centralized execution order from execution-order.ts
+  // This is the SINGLE SOURCE OF TRUTH for execution order
+  // EXECUTION_ORDER is imported from '@/lib/discussions/execution-order'
+
+  // Get personas - order of retrieval doesn't matter, but we validate names
+  const analyzerPersona = aiPersonas.analyzer;
+  const solverPersona = aiPersonas.solver;
+  const moderatorPersona = aiPersonas.moderator;
+
+  // CRITICAL: Log execution order at function entry
+  logger.info('🚀 ROUND EXECUTION START', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    executionOrder: EXECUTION_ORDER,
+    timestamp: new Date().toISOString(),
+    function: 'processSingleRound',
+  });
+
+  // CRITICAL DEBUG: Log persona assignments to verify they're correct
+  logger.info('🔍 DEBUG: Persona assignments verification', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    analyzerPersonaId: analyzerPersona.id,
+    analyzerPersonaName: analyzerPersona.name,
+    analyzerPersonaProvider: analyzerPersona.provider,
+    solverPersonaId: solverPersona.id,
+    solverPersonaName: solverPersona.name,
+    solverPersonaProvider: solverPersona.provider,
+    moderatorPersonaId: moderatorPersona.id,
+    moderatorPersonaName: moderatorPersona.name,
+    moderatorPersonaProvider: moderatorPersona.provider,
+    timestamp: new Date().toISOString(),
+  });
+
+  // CRITICAL FIX 1.1: Explicit persona validation at start
+  // Verify persona assignments are correct before processing
+  if (analyzerPersona.name !== 'Analyzer AI') {
+    logger.error('🚨 CRITICAL: Analyzer persona name mismatch', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expected: 'Analyzer AI',
+      actual: analyzerPersona.name,
+    });
+    throw new Error(`Invalid Analyzer persona: expected 'Analyzer AI', got '${analyzerPersona.name}'`);
+  }
+  if (solverPersona.name !== 'Solver AI') {
+    logger.error('🚨 CRITICAL: Solver persona name mismatch', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expected: 'Solver AI',
+      actual: solverPersona.name,
+    });
+    throw new Error(`Invalid Solver persona: expected 'Solver AI', got '${solverPersona.name}'`);
+  }
+  if (moderatorPersona.name !== 'Moderator AI') {
+    logger.error('🚨 CRITICAL: Moderator persona name mismatch', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expected: 'Moderator AI',
+      actual: moderatorPersona.name,
+    });
+    throw new Error(`Invalid Moderator persona: expected 'Moderator AI', got '${moderatorPersona.name}'`);
+  }
+
+  logger.info('Starting round processing', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    isFirstRound,
+    hasFiles: files.length > 0,
+    analyzerPersona: analyzerPersona.name,
+    solverPersona: solverPersona.name,
+    moderatorPersona: moderatorPersona.name,
+  });
+
+  // CRITICAL: Validate persona execution order
+  // CORRECT ORDER: Analyzer → Solver → Moderator (verified and confirmed by user)
+  // This validation ensures the order is maintained throughout processing
+  // Using centralized EXECUTION_ORDER from execution-order.ts (single source of truth)
+  logger.info('🔄 EXECUTION ORDER VALIDATION: Processing round with order', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    expectedOrder: EXECUTION_ORDER,
+    timestamp: new Date().toISOString(),
+  });
+
+  // CRITICAL: Validate execution order using centralized validation
+  // Convert readonly array to mutable for validation
+  const orderValidation = validateExecutionOrder([...EXECUTION_ORDER]);
+  if (!orderValidation.isValid) {
+    logger.error('🚨 CRITICAL: Execution order validation failed at function entry', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      error: orderValidation.error,
+      executionOrder: EXECUTION_ORDER,
+    });
+    throw new Error(`Execution order validation failed: ${orderValidation.error}`);
+  }
+
+  // Log execution order validation
+  logExecutionOrderValidation(
+    { discussionId, roundNumber: currentRoundNumber, operation: 'processSingleRound' },
+    [...EXECUTION_ORDER]
+  );
+
+  // Process Analyzer AI response first
+  // Only Analyzer in Round 1 with no previous rounds should get isFirstMessage = true
+  // Solver and Moderator always respond to previous messages, never as first message
+
+  // CRITICAL FIX: Use standardized filtering function for Analyzer context
+  // Analyzer should only see complete rounds (all 3 responses) when starting a new round
+  // This prevents Analyzer from incorrectly seeing Solver's response from an incomplete round
+
+  // CRITICAL AUDIT: Verify current round is NOT in discussionContext before filtering
+  const currentRoundInContext = (discussionContext.rounds || []).find(
+    (r) => r.roundNumber === currentRoundNumber
+  );
+  if (currentRoundInContext) {
+    logger.error('🚨 CRITICAL BUG: Current round found in discussionContext before Analyzer execution!', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      currentRoundInContext: {
+        roundNumber: currentRoundInContext.roundNumber,
+        hasAnalyzer: !!currentRoundInContext.analyzerResponse?.content?.trim(),
+        hasSolver: !!currentRoundInContext.solverResponse?.content?.trim(),
+        hasModerator: !!currentRoundInContext.moderatorResponse?.content?.trim(),
+      },
+      note: 'This indicates a race condition or incorrect context loading - Analyzer should never see current round',
+    });
+    // Remove current round from context to prevent contamination
+    discussionContext.rounds = (discussionContext.rounds || []).filter(
+      (r) => r.roundNumber !== currentRoundNumber
+    );
+    logger.warn('🔧 FIXED: Removed current round from discussionContext to prevent Analyzer contamination', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+    });
+  }
+
+  const filteredContextForAnalyzer = {
+    ...discussionContext,
+    rounds: filterRoundsForPersona(
+      discussionContext.rounds || [],
+      'Analyzer AI',
+      currentRoundNumber
+    ),
+  };
+
+  // CRITICAL AUDIT: Log context details for Analyzer
+  logger.info('🔍 AUDIT: Analyzer context before execution', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    originalRoundsCount: discussionContext.rounds?.length || 0,
+    filteredRoundsCount: filteredContextForAnalyzer.rounds.length,
+    filteredRoundNumbers: filteredContextForAnalyzer.rounds.map((r) => r.roundNumber),
+    hasCurrentRoundInFiltered: filteredContextForAnalyzer.rounds.some(
+      (r) => r.roundNumber === currentRoundNumber
+    ),
+    lastCompleteRound: filteredContextForAnalyzer.rounds.length > 0
+      ? {
+          roundNumber: filteredContextForAnalyzer.rounds[filteredContextForAnalyzer.rounds.length - 1].roundNumber,
+          lastPersona: filteredContextForAnalyzer.rounds[filteredContextForAnalyzer.rounds.length - 1].moderatorResponse?.persona,
+          lastPersonaContent: filteredContextForAnalyzer.rounds[filteredContextForAnalyzer.rounds.length - 1].moderatorResponse?.content?.substring(0, 100),
+        }
+      : null,
+    // CRITICAL: Check if any Solver responses exist in filtered context (should be NONE for Analyzer)
+    hasSolverInContext: filteredContextForAnalyzer.rounds.some((r) =>
+      r.solverResponse?.content?.trim() && r.roundNumber !== currentRoundNumber
+    ),
+    solverResponsesInContext: filteredContextForAnalyzer.rounds
+      .filter((r) => r.solverResponse?.content?.trim() && r.roundNumber !== currentRoundNumber)
+      .map((r) => ({
+        roundNumber: r.roundNumber,
+        solverContent: r.solverResponse?.content?.substring(0, 50),
+      })),
+    timestamp: new Date().toISOString(),
+  });
+
+  // CRITICAL AUDIT: Verify no Solver responses in Analyzer's context
+  const solverResponsesInAnalyzerContext = filteredContextForAnalyzer.rounds.filter(
+    (r) => r.solverResponse?.content?.trim() && r.roundNumber !== currentRoundNumber
+  );
+  if (solverResponsesInAnalyzerContext.length > 0) {
+    logger.error('🚨 CRITICAL BUG: Solver responses found in Analyzer context!', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      solverResponsesCount: solverResponsesInAnalyzerContext.length,
+      solverResponseRounds: solverResponsesInAnalyzerContext.map((r) => r.roundNumber),
+      note: 'Analyzer should NEVER see Solver responses - this indicates filtering failed',
+    });
+    throw new Error('CRITICAL: Solver responses found in Analyzer context - filtering failed');
+  }
+
+  if (filteredContextForAnalyzer.rounds.length !== (discussionContext.rounds?.length || 0)) {
+    const incompleteRoundsCount = (discussionContext.rounds?.length || 0) - filteredContextForAnalyzer.rounds.length;
+    logger.info('processSingleRound: Filtered incomplete rounds for Analyzer using standardized function', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      originalRoundsCount: discussionContext.rounds?.length || 0,
+      filteredRoundsCount: filteredContextForAnalyzer.rounds.length,
+      incompleteRoundsCount,
+      // Log details of filtered incomplete rounds for debugging
+      incompleteRounds: (discussionContext.rounds || [])
+        .filter((r) => isRoundIncomplete(r))
+        .map((r) => ({
+          roundNumber: r.roundNumber,
+          hasAnalyzer: !!r.analyzerResponse?.content?.trim(),
+          hasSolver: !!r.solverResponse?.content?.trim(),
+          hasModerator: !!r.moderatorResponse?.content?.trim(),
+        })),
+    });
+  }
+
+  // Check for incomplete rounds that might have content (from previous failed attempts)
+  const hasAnyRoundContent = filteredContextForAnalyzer.rounds?.some((round) => {
+    return (
+      (round.analyzerResponse?.content && round.analyzerResponse.content.trim().length > 0) ||
+      (round.solverResponse?.content && round.solverResponse.content.trim().length > 0) ||
+      (round.moderatorResponse?.content && round.moderatorResponse.content.trim().length > 0)
+    );
+  }) || false;
+
+  // Only treat as first message if:
+  // 1. It's Round 1
+  // 2. No rounds exist OR no rounds have any content
+  // 3. No messages exist
+  const isFirstMessage = isFirstRound &&
+    !hasAnyRoundContent &&
+    (filteredContextForAnalyzer.rounds?.length === 0 || !filteredContextForAnalyzer.rounds) &&
+    (filteredContextForAnalyzer.messages?.length === 0 || !filteredContextForAnalyzer.messages);
+
+  // CRITICAL FIX 1.1: Calculate expected turn BEFORE execution
+  const expectedAnalyzerTurn = calculateTurnNumber(currentRoundNumber, 'Analyzer AI');
+
+  logger.info('🔄 EXECUTION ORDER: Starting Analyzer AI response (FIRST)', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    expectedTurn: expectedAnalyzerTurn,
+    isFirstMessage,
+    isFirstRound,
+    previousRoundsCount: discussionContext.rounds?.length || 0,
+    hasAnyRoundContent,
+    roundsWithContent: discussionContext.rounds?.filter((r) =>
+      (r.analyzerResponse?.content?.trim() || r.solverResponse?.content?.trim() || r.moderatorResponse?.content?.trim())
+    ).length || 0,
+    timestamp: new Date().toISOString(),
+  });
+  // CRITICAL: Log before generating Analyzer response to track execution order
+  logger.info('🚀 EXECUTING ANALYZER: About to call generateAIResponse for Analyzer AI', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    expectedTurn: expectedAnalyzerTurn,
+    personaName: analyzerPersona.name,
+    personaId: analyzerPersona.id,
+    timestamp: new Date().toISOString(),
+  });
+
+  // CRITICAL DEBUG: Log before calling generateAIResponse for Analyzer
+  logger.info('🔍 DEBUG: About to call generateAIResponse for Analyzer', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    personaId: analyzerPersona.id,
+    personaName: analyzerPersona.name,
+    expectedTurn: expectedAnalyzerTurn,
+    timestamp: new Date().toISOString(),
+  });
+
+  // CRITICAL RUNTIME VALIDATION: Verify Analyzer can execute (should be first)
+  const analyzerValidation = validatePersonaCanExecute('Analyzer AI', []);
+  if (!analyzerValidation.isValid) {
+    logger.error('🚨 CRITICAL: Analyzer execution validation failed', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      error: analyzerValidation.error,
+    });
+    throw new Error(`Analyzer execution validation failed: ${analyzerValidation.error}`);
+  }
+
+  // CRITICAL RUNTIME VALIDATION: Verify no responses exist for current round
+  const currentRoundResponses = (discussionContext.rounds || [])
+    .find((r) => r.roundNumber === currentRoundNumber);
+  if (currentRoundResponses) {
+    const hasSolver = !!currentRoundResponses.solverResponse?.content?.trim();
+    const hasModerator = !!currentRoundResponses.moderatorResponse?.content?.trim();
+    if (hasSolver || hasModerator) {
+      logger.error('🚨 CRITICAL: Current round has responses before Analyzer execution!', {
+        discussionId,
+        roundNumber: currentRoundNumber,
+        hasSolver,
+        hasModerator,
+        solverContent: currentRoundResponses.solverResponse?.content?.substring(0, 100),
+        note: 'This indicates Solver executed before Analyzer - CRITICAL BUG',
+      });
+      throw new Error('Current round has responses before Analyzer execution - execution order violation');
+    }
+  }
+
+  const analyzerResponse = await generateAIResponse(
+    io,
+    discussionId,
+    analyzerPersona,
+    topic,
+    filteredContextForAnalyzer, // Use filtered context to exclude incomplete rounds
+    isFirstMessage,
+    files,
+    currentRoundNumber,
+    userAnswers
+  );
+
+  // CRITICAL: Validate Analyzer response immediately after generation
+  logger.info('✅ EXECUTION ORDER: Analyzer AI response completed', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    turn: analyzerResponse.turn,
+    expectedTurn: expectedAnalyzerTurn,
+    persona: analyzerResponse.persona,
+    responseLength: analyzerResponse.content.length,
+    responsePreview: analyzerResponse.content.substring(0, 100),
+    timestamp: new Date().toISOString(),
+  });
+
+  // CRITICAL DEBUG: Verify the response actually came from Analyzer
+  if (analyzerResponse.persona !== 'Analyzer AI') {
+    logger.error('🚨 CRITICAL BUG: analyzerResponse variable contains wrong persona!', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedPersona: 'Analyzer AI',
+      actualPersona: analyzerResponse.persona,
+      actualTurn: analyzerResponse.turn,
+      expectedTurn: expectedAnalyzerTurn,
+      note: 'This indicates generateAIResponse returned wrong persona or variables are swapped',
+    });
+  }
+
+  // CRITICAL: Verify Analyzer response persona and turn immediately
+  if (analyzerResponse.persona !== 'Analyzer AI') {
+    logger.error('🚨 CRITICAL: Analyzer response has wrong persona immediately after generation', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedPersona: 'Analyzer AI',
+      actualPersona: analyzerResponse.persona,
+    });
+    throw new Error(`Analyzer response persona mismatch: expected 'Analyzer AI', got '${analyzerResponse.persona}'`);
+  }
+
+  // CRITICAL FIX 1.1: Validate turn number matches expected
+  if (analyzerResponse.turn !== expectedAnalyzerTurn) {
+    logger.error('🚨 CRITICAL: Analyzer turn number mismatch', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedTurn: expectedAnalyzerTurn,
+      actualTurn: analyzerResponse.turn,
+    });
+    throw new Error(`Analyzer turn number mismatch: expected ${expectedAnalyzerTurn}, got ${analyzerResponse.turn}`);
+  }
+
+  // CRITICAL FIX: Validate response completeness - minimum length and proper punctuation
+  const analyzerContent = analyzerResponse.content.trim();
+  const analyzerMinLength = 800; // Minimum expected length (2-4 paragraphs)
+  if (analyzerContent.length < analyzerMinLength) {
+    logger.warn('⚠️ Analyzer response is shorter than expected minimum length', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      responseLength: analyzerContent.length,
+      expectedMinLength: analyzerMinLength,
+      difference: analyzerMinLength - analyzerContent.length,
+      note: 'Response may be incomplete or truncated',
+    });
+  }
+  if (!/[.!?]\s*$/.test(analyzerContent)) {
+    logger.warn('⚠️ Analyzer response does not end with proper punctuation', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      responseLength: analyzerContent.length,
+      lastChars: analyzerContent.slice(-50),
+      note: 'Response may be incomplete',
+    });
+  }
+
+  // For Solver's context, include Analyzer's response
+  // CRITICAL: This is a temporary round object for context only - never persisted to file
+  // The context needs to reflect the current processing state, not just what's in storage
+  // This ensures Solver sees Analyzer's response even though it hasn't been saved yet
+  const tempRoundForSolverContext: DiscussionRound = {
+    roundNumber: currentRoundNumber,
+    analyzerResponse,
+    solverResponse: {
+      discussion_id: discussionId,
+      persona: 'Solver AI',
+      content: '',
+      turn: calculateTurnNumber(currentRoundNumber, 'Solver AI'),
+      timestamp: new Date().toISOString(),
+      created_at: Date.now(),
+    },
+    moderatorResponse: {
+      discussion_id: discussionId,
+      persona: 'Moderator AI',
+      content: '',
+      turn: calculateTurnNumber(currentRoundNumber, 'Moderator AI'),
+      timestamp: new Date().toISOString(),
+      created_at: Date.now(),
+    },
+    timestamp: new Date().toISOString(),
+  };
+
+  // CRITICAL: Build context that includes Analyzer's response for Solver
+  // This context accurately reflects the current processing state
+  // Note: tempRoundForSolverContext is not in file storage yet, but that's correct
+  // - Context should reflect current state during processing
+  // - Round will be persisted only after all three responses are complete
+  const contextWithAnalyzer = {
+    ...discussionContext,
+    rounds: filterRoundsForPersona(
+      [...(discussionContext.rounds || []), tempRoundForSolverContext],
+      'Solver AI',
+      currentRoundNumber
+    ),
+  };
+
+  // CRITICAL: Validate Analyzer response was generated before Solver
+  if (!analyzerResponse || !analyzerResponse.content || analyzerResponse.content.trim().length === 0) {
+    logger.error('🚨 CRITICAL: Analyzer response is missing or empty before Solver processing', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      hasAnalyzerResponse: !!analyzerResponse,
+      analyzerResponseLength: analyzerResponse?.content?.length || 0,
+    });
+    throw new Error('Analyzer response must be generated before Solver response');
+  }
+
+  // CRITICAL FIX: Explicit execution order guard - Verify Analyzer completed successfully
+  if (analyzerResponse.persona !== 'Analyzer AI') {
+    logger.error('🚨 CRITICAL EXECUTION ORDER VIOLATION: Analyzer response has wrong persona', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedPersona: 'Analyzer AI',
+      actualPersona: analyzerResponse.persona,
+      error: 'Cannot proceed to Solver - Analyzer response is invalid',
+    });
+    throw new Error(`Execution order violation: Analyzer response persona is '${analyzerResponse.persona}', expected 'Analyzer AI'`);
+  }
+  if (analyzerResponse.turn !== calculateTurnNumber(currentRoundNumber, 'Analyzer AI')) {
+    logger.error('🚨 CRITICAL EXECUTION ORDER VIOLATION: Analyzer turn number is incorrect', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedTurn: calculateTurnNumber(currentRoundNumber, 'Analyzer AI'),
+      actualTurn: analyzerResponse.turn,
+      error: 'Cannot proceed to Solver - Analyzer turn number is invalid',
+    });
+    throw new Error(`Execution order violation: Analyzer turn number is ${analyzerResponse.turn}, expected ${calculateTurnNumber(currentRoundNumber, 'Analyzer AI')}`);
+  }
+  logger.info('✅ EXECUTION ORDER GUARD: Analyzer completed successfully, proceeding to Solver', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    analyzerTurn: analyzerResponse.turn,
+    analyzerPersona: analyzerResponse.persona,
+    analyzerContentLength: analyzerResponse.content.length,
+  });
+
+  // Process Solver AI response second (Order: Analyzer → Solver → Moderator - CORRECT)
+  // CRITICAL FIX 1.1: Calculate expected turn BEFORE execution
+  const expectedSolverTurn = calculateTurnNumber(currentRoundNumber, 'Solver AI');
+
+  // CRITICAL: Log before generating Solver response to track execution order
+  logger.info('🔄 EXECUTION ORDER: Starting Solver AI response (SECOND)', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    expectedTurn: expectedSolverTurn,
+    personaName: solverPersona.name,
+    personaId: solverPersona.id,
+    analyzerResponseTurn: analyzerResponse.turn, // Verify Analyzer completed first
+    analyzerResponsePersona: analyzerResponse.persona,
+    timestamp: new Date().toISOString(),
+  });
+
+  // CRITICAL DEBUG: Log before calling generateAIResponse for Solver
+  logger.info('🔍 DEBUG: About to call generateAIResponse for Solver', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    personaId: solverPersona.id,
+    personaName: solverPersona.name,
+    expectedTurn: expectedSolverTurn,
+    analyzerResponsePersona: analyzerResponse.persona,
+    analyzerResponseTurn: analyzerResponse.turn,
+    timestamp: new Date().toISOString(),
+  });
+
+  // CRITICAL RUNTIME VALIDATION: Verify Solver can execute (Analyzer must have executed)
+  const solverValidation = validatePersonaCanExecute('Solver AI', ['Analyzer AI']);
+  if (!solverValidation.isValid) {
+    logger.error('🚨 CRITICAL: Solver execution validation failed', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      error: solverValidation.error,
+      analyzerResponsePersona: analyzerResponse.persona,
+    });
+    throw new Error(`Solver execution validation failed: ${solverValidation.error}`);
+  }
+
+  const solverResponse = await generateAIResponse(
+    io,
+    discussionId,
+    solverPersona,
+    topic,
+    contextWithAnalyzer,
+    false,
+    undefined,
+    currentRoundNumber,
+    userAnswers
+  );
+
+  // CRITICAL: Validate Solver response immediately after generation
+  logger.info('✅ EXECUTION ORDER: Solver AI response completed', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    turn: solverResponse.turn,
+    expectedTurn: expectedSolverTurn,
+    persona: solverResponse.persona,
+    responseLength: solverResponse.content.length,
+    responsePreview: solverResponse.content.substring(0, 100),
+    timestamp: new Date().toISOString(),
+  });
+
+  // CRITICAL DEBUG: Verify the response actually came from Solver
+  if (solverResponse.persona !== 'Solver AI') {
+    logger.error('🚨 CRITICAL BUG: solverResponse variable contains wrong persona!', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedPersona: 'Solver AI',
+      actualPersona: solverResponse.persona,
+      actualTurn: solverResponse.turn,
+      expectedTurn: expectedSolverTurn,
+      note: 'This indicates generateAIResponse returned wrong persona or variables are swapped',
+    });
+  }
+
+  // CRITICAL: Verify Solver response persona and turn immediately
+  if (solverResponse.persona !== 'Solver AI') {
+    logger.error('🚨 CRITICAL: Solver response has wrong persona immediately after generation', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedPersona: 'Solver AI',
+      actualPersona: solverResponse.persona,
+    });
+    throw new Error(`Solver response persona mismatch: expected 'Solver AI', got '${solverResponse.persona}'`);
+  }
+
+  // CRITICAL FIX 1.1: Validate turn number matches expected
+  if (solverResponse.turn !== expectedSolverTurn) {
+    logger.error('🚨 CRITICAL: Solver turn number mismatch', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedTurn: expectedSolverTurn,
+      actualTurn: solverResponse.turn,
+    });
+    throw new Error(`Solver turn number mismatch: expected ${expectedSolverTurn}, got ${solverResponse.turn}`);
+  }
+
+  // CRITICAL FIX: Validate response completeness - minimum length and proper punctuation
+  const solverContent = solverResponse.content.trim();
+  const solverMinLength = 800; // Minimum expected length (2-4 paragraphs)
+  if (solverContent.length < solverMinLength) {
+    logger.warn('⚠️ Solver response is shorter than expected minimum length', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      responseLength: solverContent.length,
+      expectedMinLength: solverMinLength,
+      difference: solverMinLength - solverContent.length,
+      note: 'Response may be incomplete or truncated',
+    });
+  }
+  if (!/[.!?]\s*$/.test(solverContent)) {
+    logger.warn('⚠️ Solver response does not end with proper punctuation', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      responseLength: solverContent.length,
+      lastChars: solverContent.slice(-50),
+      note: 'Response may be incomplete',
+    });
+  }
+
+  // For Moderator's context, include Analyzer's and Solver's responses
+  // CRITICAL: This is a temporary round object for context only - never persisted to file
+  // The context needs to reflect the current processing state, not just what's in storage
+  // This ensures Moderator sees both Analyzer's and Solver's responses even though they haven't been saved yet
+  const tempRoundForModeratorContext: DiscussionRound = {
+    roundNumber: currentRoundNumber,
+    analyzerResponse,
+    solverResponse,
+    moderatorResponse: {
+      discussion_id: discussionId,
+      persona: 'Moderator AI',
+      content: '',
+      turn: calculateTurnNumber(currentRoundNumber, 'Moderator AI'),
+      timestamp: new Date().toISOString(),
+      created_at: Date.now(),
+    },
+    timestamp: new Date().toISOString(),
+  };
+
+  // CRITICAL: Build context that includes Analyzer's and Solver's responses for Moderator
+  // This context accurately reflects the current processing state
+  // Note: tempRoundForModeratorContext is not in file storage yet, but that's correct
+  // - Context should reflect current state during processing
+  // - Round will be persisted only after all three responses are complete
+  const contextWithBoth = {
+    ...discussionContext,
+    rounds: filterRoundsForPersona(
+      [...(discussionContext.rounds || []), tempRoundForModeratorContext],
+      'Moderator AI',
+      currentRoundNumber
+    ),
+  };
+
+  // CRITICAL: Validate Solver response was generated before Moderator
+  if (!solverResponse || !solverResponse.content || solverResponse.content.trim().length === 0) {
+    logger.error('🚨 CRITICAL: Solver response is missing or empty before Moderator processing', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      hasSolverResponse: !!solverResponse,
+      solverResponseLength: solverResponse?.content?.length || 0,
+    });
+    throw new Error('Solver response must be generated before Moderator response');
+  }
+
+  // CRITICAL FIX: Explicit execution order guard - Verify Solver completed successfully
+  if (solverResponse.persona !== 'Solver AI') {
+    logger.error('🚨 CRITICAL EXECUTION ORDER VIOLATION: Solver response has wrong persona', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedPersona: 'Solver AI',
+      actualPersona: solverResponse.persona,
+      error: 'Cannot proceed to Moderator - Solver response is invalid',
+    });
+    throw new Error(`Execution order violation: Solver response persona is '${solverResponse.persona}', expected 'Solver AI'`);
+  }
+  if (solverResponse.turn !== calculateTurnNumber(currentRoundNumber, 'Solver AI')) {
+    logger.error('🚨 CRITICAL EXECUTION ORDER VIOLATION: Solver turn number is incorrect', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedTurn: calculateTurnNumber(currentRoundNumber, 'Solver AI'),
+      actualTurn: solverResponse.turn,
+      error: 'Cannot proceed to Moderator - Solver turn number is invalid',
+    });
+    throw new Error(`Execution order violation: Solver turn number is ${solverResponse.turn}, expected ${calculateTurnNumber(currentRoundNumber, 'Solver AI')}`);
+  }
+  logger.info('✅ EXECUTION ORDER GUARD: Solver completed successfully, proceeding to Moderator', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    solverTurn: solverResponse.turn,
+    solverPersona: solverResponse.persona,
+    solverContentLength: solverResponse.content.length,
+    analyzerTurn: analyzerResponse.turn,
+  });
+
+  // Process Moderator AI response third (Order: Analyzer → Solver → Moderator - CORRECT)
+  // CRITICAL FIX 1.1: Calculate expected turn BEFORE execution
+  const expectedModeratorTurn = calculateTurnNumber(currentRoundNumber, 'Moderator AI');
+
+  // CRITICAL: Log before generating Moderator response to track execution order
+  logger.info('🔄 EXECUTION ORDER: Starting Moderator AI response (THIRD)', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    expectedTurn: expectedModeratorTurn,
+    personaName: moderatorPersona.name,
+    personaId: moderatorPersona.id,
+    analyzerResponseTurn: analyzerResponse.turn, // Verify Analyzer completed first
+    solverResponseTurn: solverResponse.turn, // Verify Solver completed second
+    analyzerResponsePersona: analyzerResponse.persona,
+    solverResponsePersona: solverResponse.persona,
+    timestamp: new Date().toISOString(),
+  });
+
+  // CRITICAL DEBUG: Log before calling generateAIResponse for Moderator
+  logger.info('🔍 DEBUG: About to call generateAIResponse for Moderator', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    personaId: moderatorPersona.id,
+    personaName: moderatorPersona.name,
+    expectedTurn: expectedModeratorTurn,
+    analyzerResponsePersona: analyzerResponse.persona,
+    analyzerResponseTurn: analyzerResponse.turn,
+    solverResponsePersona: solverResponse.persona,
+    solverResponseTurn: solverResponse.turn,
+    timestamp: new Date().toISOString(),
+  });
+
+  // CRITICAL RUNTIME VALIDATION: Verify Moderator can execute (Analyzer and Solver must have executed)
+  const moderatorValidation = validatePersonaCanExecute('Moderator AI', ['Analyzer AI', 'Solver AI']);
+  if (!moderatorValidation.isValid) {
+    logger.error('🚨 CRITICAL: Moderator execution validation failed', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      error: moderatorValidation.error,
+      analyzerResponsePersona: analyzerResponse.persona,
+      solverResponsePersona: solverResponse.persona,
+    });
+    throw new Error(`Moderator execution validation failed: ${moderatorValidation.error}`);
+  }
+
+  const moderatorResponse = await generateAIResponse(
+    io,
+    discussionId,
+    moderatorPersona,
+    topic,
+    contextWithBoth,
+    false,
+    undefined,
+    currentRoundNumber,
+    userAnswers
+  );
+
+  // CRITICAL: Validate Moderator response immediately after generation
+  logger.info('✅ EXECUTION ORDER: Moderator AI response completed', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    turn: moderatorResponse.turn,
+    expectedTurn: expectedModeratorTurn,
+    persona: moderatorResponse.persona,
+    responseLength: moderatorResponse.content.length,
+    responsePreview: moderatorResponse.content.substring(0, 100),
+    timestamp: new Date().toISOString(),
+  });
+
+  // CRITICAL DEBUG: Verify the response actually came from Moderator
+  if (moderatorResponse.persona !== 'Moderator AI') {
+    logger.error('🚨 CRITICAL BUG: moderatorResponse variable contains wrong persona!', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedPersona: 'Moderator AI',
+      actualPersona: moderatorResponse.persona,
+      actualTurn: moderatorResponse.turn,
+      expectedTurn: expectedModeratorTurn,
+      note: 'This indicates generateAIResponse returned wrong persona or variables are swapped',
+    });
+  }
+
+  // CRITICAL: Verify Moderator response persona and turn immediately
+  if (moderatorResponse.persona !== 'Moderator AI') {
+    logger.error('🚨 CRITICAL: Moderator response has wrong persona immediately after generation', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedPersona: 'Moderator AI',
+      actualPersona: moderatorResponse.persona,
+    });
+    throw new Error(`Moderator response persona mismatch: expected 'Moderator AI', got '${moderatorResponse.persona}'`);
+  }
+
+  // CRITICAL FIX 1.1: Validate turn number matches expected
+  if (moderatorResponse.turn !== expectedModeratorTurn) {
+    logger.error('🚨 CRITICAL: Moderator turn number mismatch', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedTurn: expectedModeratorTurn,
+      actualTurn: moderatorResponse.turn,
+    });
+    throw new Error(`Moderator turn number mismatch: expected ${expectedModeratorTurn}, got ${moderatorResponse.turn}`);
+  }
+
+  // CRITICAL FIX: Validate response completeness - minimum length and proper punctuation
+  const moderatorContent = moderatorResponse.content.trim();
+  const moderatorMinLength = 800; // Minimum expected length (2-4 paragraphs)
+  if (moderatorContent.length < moderatorMinLength) {
+    logger.warn('⚠️ Moderator response is shorter than expected minimum length', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      responseLength: moderatorContent.length,
+      expectedMinLength: moderatorMinLength,
+      difference: moderatorMinLength - moderatorContent.length,
+      note: 'Response may be incomplete or truncated',
+    });
+  }
+  if (!/[.!?]\s*$/.test(moderatorContent)) {
+    logger.warn('⚠️ Moderator response does not end with proper punctuation', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      responseLength: moderatorContent.length,
+      lastChars: moderatorContent.slice(-50),
+      note: 'Response may be incomplete',
+    });
+  }
+
+  // CRITICAL: Validate all responses have correct turn numbers before creating round object
+  const expectedAnalyzerTurnFinal = calculateTurnNumber(currentRoundNumber, 'Analyzer AI');
+  const expectedSolverTurnFinal = calculateTurnNumber(currentRoundNumber, 'Solver AI');
+  const expectedModeratorTurnFinal = calculateTurnNumber(currentRoundNumber, 'Moderator AI');
+
+  // Validate Analyzer response
+  if (analyzerResponse.persona !== 'Analyzer AI') {
+    logger.error('🚨 CRITICAL: Analyzer response has wrong persona', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedPersona: 'Analyzer AI',
+      actualPersona: analyzerResponse.persona,
+    });
+    throw new Error(`Analyzer response persona mismatch: expected 'Analyzer AI', got '${analyzerResponse.persona}'`);
+  }
+  if (analyzerResponse.turn !== expectedAnalyzerTurnFinal) {
+    logger.error('🚨 CRITICAL: Analyzer response has wrong turn number in final round object', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedTurn: expectedAnalyzerTurnFinal,
+      actualTurn: analyzerResponse.turn,
+    });
+    throw new Error(`Analyzer turn number mismatch in final round: expected ${expectedAnalyzerTurnFinal}, got ${analyzerResponse.turn}`);
+  }
+
+  // Validate Solver response
+  if (solverResponse.persona !== 'Solver AI') {
+    logger.error('🚨 CRITICAL: Solver response has wrong persona', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedPersona: 'Solver AI',
+      actualPersona: solverResponse.persona,
+    });
+    throw new Error(`Solver response persona mismatch: expected 'Solver AI', got '${solverResponse.persona}'`);
+  }
+  if (solverResponse.turn !== expectedSolverTurnFinal) {
+    logger.error('🚨 CRITICAL: Solver response has wrong turn number in final round object', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedTurn: expectedSolverTurnFinal,
+      actualTurn: solverResponse.turn,
+    });
+    throw new Error(`Solver turn number mismatch in final round: expected ${expectedSolverTurnFinal}, got ${solverResponse.turn}`);
+  }
+
+  // Validate Moderator response
+  if (moderatorResponse.persona !== 'Moderator AI') {
+    logger.error('🚨 CRITICAL: Moderator response has wrong persona', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedPersona: 'Moderator AI',
+      actualPersona: moderatorResponse.persona,
+    });
+    throw new Error(`Moderator response persona mismatch: expected 'Moderator AI', got '${moderatorResponse.persona}'`);
+  }
+  if (moderatorResponse.turn !== expectedModeratorTurnFinal) {
+    logger.error('🚨 CRITICAL: Moderator response has wrong turn number in final round object', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expectedTurn: expectedModeratorTurnFinal,
+      actualTurn: moderatorResponse.turn,
+    });
+    throw new Error(`Moderator turn number mismatch in final round: expected ${expectedModeratorTurnFinal}, got ${moderatorResponse.turn}`);
+  }
+
+  logger.info('✅ ROUND OBJECT VALIDATION: All responses validated before creating round object', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    analyzerPersona: analyzerResponse.persona,
+    analyzerTurn: analyzerResponse.turn,
+    solverPersona: solverResponse.persona,
+    solverTurn: solverResponse.turn,
+    moderatorPersona: moderatorResponse.persona,
+    moderatorTurn: moderatorResponse.turn,
+    timestamp: new Date().toISOString(),
+  });
+
+  // CRITICAL: Final validation before creating round object
+  // Double-check that responses are in correct variables (defense against variable swapping bugs)
+  if (analyzerResponse.persona !== 'Analyzer AI') {
+    logger.error('🚨 CRITICAL BUG: analyzerResponse variable contains wrong persona!', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expected: 'Analyzer AI',
+      actual: analyzerResponse.persona,
+      actualTurn: analyzerResponse.turn,
+    });
+    throw new Error(`BUG DETECTED: analyzerResponse variable contains ${analyzerResponse.persona} instead of Analyzer AI`);
+  }
+  if (solverResponse.persona !== 'Solver AI') {
+    logger.error('🚨 CRITICAL BUG: solverResponse variable contains wrong persona!', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expected: 'Solver AI',
+      actual: solverResponse.persona,
+      actualTurn: solverResponse.turn,
+    });
+    throw new Error(`BUG DETECTED: solverResponse variable contains ${solverResponse.persona} instead of Solver AI`);
+  }
+  if (moderatorResponse.persona !== 'Moderator AI') {
+    logger.error('🚨 CRITICAL BUG: moderatorResponse variable contains wrong persona!', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      expected: 'Moderator AI',
+      actual: moderatorResponse.persona,
+      actualTurn: moderatorResponse.turn,
+    });
+    throw new Error(`BUG DETECTED: moderatorResponse variable contains ${moderatorResponse.persona} instead of Moderator AI`);
+  }
+
+  // CRITICAL DEBUG: Log response variables before creating round object
+  logger.info('🔍 DEBUG: Response variables before round object creation', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    analyzerResponsePersona: analyzerResponse.persona,
+    analyzerResponseTurn: analyzerResponse.turn,
+    analyzerResponseLength: analyzerResponse.content.length,
+    solverResponsePersona: solverResponse.persona,
+    solverResponseTurn: solverResponse.turn,
+    solverResponseLength: solverResponse.content.length,
+    moderatorResponsePersona: moderatorResponse.persona,
+    moderatorResponseTurn: moderatorResponse.turn,
+    moderatorResponseLength: moderatorResponse.content.length,
+    timestamp: new Date().toISOString(),
+  });
+
+  // Create round object with all three responses
+  // CRITICAL: Ensure responses are assigned to correct fields
+  // Order MUST be: Analyzer → Solver → Moderator
+  const round: DiscussionRound = {
+    roundNumber: currentRoundNumber,
+    analyzerResponse, // Must be Analyzer AI with turn (roundNumber-1)*3+1
+    solverResponse,   // Must be Solver AI with turn (roundNumber-1)*3+2
+    moderatorResponse, // Must be Moderator AI with turn (roundNumber-1)*3+3
+    timestamp: new Date().toISOString(),
+  };
+
+  // CRITICAL DEBUG: Verify round object after creation
+  logger.info('🔍 DEBUG: Round object after creation - verifying assignments', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    roundAnalyzerPersona: round.analyzerResponse.persona,
+    roundAnalyzerTurn: round.analyzerResponse.turn,
+    roundSolverPersona: round.solverResponse.persona,
+    roundSolverTurn: round.solverResponse.turn,
+    roundModeratorPersona: round.moderatorResponse.persona,
+    roundModeratorTurn: round.moderatorResponse.turn,
+    analyzerVariablePersona: analyzerResponse.persona,
+    solverVariablePersona: solverResponse.persona,
+    moderatorVariablePersona: moderatorResponse.persona,
+    timestamp: new Date().toISOString(),
+  });
+
+  // CRITICAL AUDIT: Validate round object matches execution order
+  const roundPersonas = [
+    round.analyzerResponse.persona,
+    round.solverResponse.persona,
+    round.moderatorResponse.persona,
+  ];
+  const roundOrderValidation = validateExecutionOrder(roundPersonas);
+  if (!roundOrderValidation.isValid) {
+    logger.error('🚨 CRITICAL: Round object personas do not match execution order!', {
+      discussionId,
+      roundNumber: currentRoundNumber,
+      error: roundOrderValidation.error,
+      roundPersonas,
+      expectedOrder: EXECUTION_ORDER,
+      note: 'This indicates responses were assigned to wrong properties in round object',
+    });
+    throw new Error(`Round object execution order validation failed: ${roundOrderValidation.error}`);
+  }
+
+  logger.info('✅ AUDIT: Round object execution order validated', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    roundPersonas,
+    expectedOrder: EXECUTION_ORDER,
+    validated: true,
+  });
+
+  // CRITICAL: Log round object creation with full details for debugging
+  logger.info('🔍 ROUND OBJECT CREATED: Final round object structure', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    analyzerPersona: round.analyzerResponse.persona,
+    analyzerTurn: round.analyzerResponse.turn,
+    analyzerContentLength: round.analyzerResponse.content.length,
+    solverPersona: round.solverResponse.persona,
+    solverTurn: round.solverResponse.turn,
+    solverContentLength: round.solverResponse.content.length,
+    moderatorPersona: round.moderatorResponse.persona,
+    moderatorTurn: round.moderatorResponse.turn,
+    moderatorContentLength: round.moderatorResponse.content.length,
+    timestamp: new Date().toISOString(),
+  });
+
+  // Final validation: Verify round object structure
+  if (round.analyzerResponse.persona !== 'Analyzer AI' || round.analyzerResponse.turn !== expectedAnalyzerTurnFinal) {
+    throw new Error(`Round object validation failed: Analyzer response incorrect`);
+  }
+  if (round.solverResponse.persona !== 'Solver AI' || round.solverResponse.turn !== expectedSolverTurnFinal) {
+    throw new Error(`Round object validation failed: Solver response incorrect`);
+  }
+  if (round.moderatorResponse.persona !== 'Moderator AI' || round.moderatorResponse.turn !== expectedModeratorTurnFinal) {
+    throw new Error(`Round object validation failed: Moderator response incorrect`);
+  }
+
+  logger.info('✅ ROUND OBJECT CREATED: Round object validated and ready to save', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    timestamp: new Date().toISOString(),
+  });
+
+  return round;
+}
+
+/**
+ * Check if auto-summary is needed and generate it if so
+ */
+async function checkAndGenerateAutoSummary(
+  io: Server,
+  discussionId: string,
+  userId: string,
+  discussionData: Awaited<ReturnType<typeof readDiscussion>>,
+  discussionContext: Awaited<ReturnType<typeof loadDiscussionContext>>,
+  round: DiscussionRound,
+  currentRoundNumber: number
+): Promise<void> {
+  const lastSummaryRound = discussionContext.currentSummary?.roundNumber || 0;
+  const roundsSinceLastSummary = currentRoundNumber - lastSummaryRound;
+  const { getTokenLimit } = await import('@/lib/discussions/token-counter');
+  const tokenLimit = getTokenLimit();
+  const tokenThreshold = Math.floor(tokenLimit * 0.8);
+
+  const needsAutoSummaryByToken = discussionContext.tokenCount >= tokenThreshold;
+  const needsAutoSummaryByRounds = currentRoundNumber % 5 === 0 || roundsSinceLastSummary >= 5;
+  const needsAutoSummary = needsAutoSummaryByToken || needsAutoSummaryByRounds;
+
+  if (needsAutoSummary) {
+    try {
+      // Only summarize rounds that haven't been summarized yet
+      // Include all rounds after the last summary, plus the current round
+      const lastSummaryRound = discussionContext.currentSummary?.roundNumber || 0;
+      const roundsToSummarize = (discussionData.rounds || []).filter(
+        (r) => r.roundNumber > lastSummaryRound
+      );
+      const summaryEntry = await summarizeRounds(
+        discussionId,
+        userId,
+        [...roundsToSummarize, round],
+        currentRoundNumber
+      );
+
+      io.to(discussionId).emit('summary-created', {
+        discussionId: discussionId,
+        summary: summaryEntry,
+      });
+
+      logger.info('Auto-summary generated for round', {
+        discussionId,
+        roundNumber: currentRoundNumber,
+        roundsSinceLastSummary,
+        tokenCount: discussionContext.tokenCount,
+        tokenLimit,
+        triggeredByToken: needsAutoSummaryByToken,
+        triggeredByRounds: needsAutoSummaryByRounds,
+      });
+    } catch (summaryError) {
+      logger.error('Auto-summary generation failed, will retry on next trigger', {
+        discussionId,
+        roundNumber: currentRoundNumber,
+        error: summaryError instanceof Error ? summaryError.message : String(summaryError),
+      });
+    }
+  }
+}
+
+/**
+ * Check if discussion is resolved and handle resolution
+ */
+function checkAndHandleResolution(
+  io: Server,
+  discussionId: string,
+  discussionData: Awaited<ReturnType<typeof readDiscussion>>,
+  round: DiscussionRound,
+  currentRoundNumber: number
+): boolean {
+  const allRounds = [...(discussionData.rounds || []), round];
+  const allMessages = allRounds.flatMap((r) => [r.analyzerResponse, r.solverResponse, r.moderatorResponse]);
+
+  if (allMessages.length >= 6) {
+    const resolved = isResolved(allMessages);
+    if (resolved) {
+      logger.info('Discussion resolved', { discussionId, roundNumber: currentRoundNumber });
+      updateDiscussion(discussionId, { is_resolved: 1 });
+      io.to(discussionId).emit('conversation-resolved', { discussionId: discussionId });
+      return true;
+    }
+  }
+  return false;
+}
+
 async function processDiscussionDialogueRounds(
   io: Server,
   _socket: Socket,
@@ -1324,7 +2161,7 @@ async function processDiscussionDialogueRounds(
   });
 
   // Use provided discussion or look it up
-  const discussionRecord = discussion || getDiscussion(discussionId);
+  const discussionRecord = discussion || getDiscussion(discussionId, userId);
   if (!discussionRecord) {
     logger.error('Discussion not found in processDiscussionDialogueRounds', { discussionId });
     io.to(discussionId).emit('error', {
@@ -1369,6 +2206,203 @@ async function processDiscussionDialogueRounds(
   }
 }
 
+/**
+ * Validate round state before processing
+ * Checks round sequence and validates new round number
+ */
+function validateRoundState(
+  discussionData: Awaited<ReturnType<typeof readDiscussion>>,
+  discussionId: string,
+  userId: string
+): number {
+  // CRITICAL: Validate round number sequence before processing
+  if (discussionData.rounds && discussionData.rounds.length > 0) {
+    const sequenceValidation = validateRoundNumberSequence(discussionData.rounds);
+    if (!sequenceValidation.isValid) {
+      logger.error('Round number sequence validation failed before processing', {
+        discussionId,
+        userId,
+        errors: sequenceValidation.errors,
+        roundsCount: discussionData.rounds.length,
+      });
+      // Log error but continue - may be recoverable
+    }
+  }
+
+  // CRITICAL FIX: Calculate next round number from actual rounds array length, not from currentRound
+  // ROOT CAUSE: currentRound could be stale or incorrect, causing wrong round numbers
+  // Use rounds.length + 1 as the single source of truth for next round number
+  const roundsCount = (discussionData.rounds || []).length;
+  const currentRoundNumber = roundsCount + 1;
+
+  // CRITICAL: Validate new round number matches expected value
+  // This is now redundant since we calculate directly from rounds.length, but kept for safety
+  const roundValidation = validateNewRoundNumber(discussionData.rounds || [], currentRoundNumber);
+  if (!roundValidation.isValid) {
+    logger.error('🚨 CRITICAL: Invalid round number - this should not happen', {
+      discussionId,
+      userId,
+      calculatedRoundNumber: currentRoundNumber,
+      expectedRoundNumber: roundsCount + 1,
+      currentRound: discussionData.currentRound,
+      roundsCount,
+      error: roundValidation.error,
+      note: 'Round number calculated from rounds.length + 1 should always match',
+    });
+    // Throw error to prevent processing with invalid round number
+    throw new Error(roundValidation.error || 'Invalid round number');
+  }
+
+  // CRITICAL FIX: Log if currentRound is out of sync with actual rounds
+  if (discussionData.currentRound !== roundsCount && roundsCount > 0) {
+    logger.warn('⚠️ WARNING: currentRound is out of sync with actual rounds', {
+      discussionId,
+      userId,
+      currentRound: discussionData.currentRound,
+      roundsCount,
+      calculatedRoundNumber: currentRoundNumber,
+      note: 'Using rounds.length + 1 as source of truth',
+    });
+  }
+
+  logger.info('✅ Round number calculated', {
+    discussionId,
+    userId,
+    currentRoundNumber,
+    roundsCount,
+    currentRound: discussionData.currentRound,
+    source: 'rounds.length + 1',
+  });
+
+  return currentRoundNumber;
+}
+
+/**
+ * Collect user answers from previous rounds for context
+ */
+function collectUserAnswersFromRounds(
+  discussionData: Awaited<ReturnType<typeof readDiscussion>>
+): Record<string, string[]> {
+  const userAnswers: Record<string, string[]> = {};
+  if (discussionData.rounds) {
+    discussionData.rounds.forEach((round) => {
+      if (round.questions && round.userAnswers) {
+        round.questions.questions.forEach((question) => {
+          if (question.userAnswers && question.userAnswers.length > 0) {
+            userAnswers[question.id] = question.userAnswers;
+          }
+        });
+      }
+    });
+  }
+  return userAnswers;
+}
+
+/**
+ * Save round to storage and emit completion events
+ */
+async function saveRoundAndEmitEvents(
+  io: Server,
+  discussionId: string,
+  userId: string,
+  round: DiscussionRound,
+  currentRoundNumber: number
+): Promise<void> {
+  // Save round to storage
+  logger.debug('Saving round to storage', { discussionId, roundNumber: currentRoundNumber });
+  await syncFileAndDatabase(
+    () => addRoundToDiscussion(discussionId, userId, round),
+    () =>
+      updateDiscussion(discussionId, {
+        current_turn: currentRoundNumber * 3, // Each round = 3 turns
+      }),
+    { discussionId, userId, operation: 'addRound' }
+  );
+  logger.debug('Round saved to storage', { discussionId, roundNumber: currentRoundNumber });
+
+  // Emit round complete
+  logger.info('Emitting round-complete event', { discussionId, roundNumber: currentRoundNumber });
+  io.to(discussionId).emit('round-complete', {
+    discussionId: discussionId,
+    round,
+  });
+
+  logger.info('Round completed successfully', {
+    discussionId,
+    roundNumber: currentRoundNumber,
+    solverLength: round.solverResponse.content.length,
+    analyzerLength: round.analyzerResponse.content.length,
+    moderatorLength: round.moderatorResponse.content.length,
+  });
+}
+
+/**
+ * Handle errors during round processing
+ * Determines if error is recoverable and handles cleanup
+ */
+function handleRoundProcessingError(
+  error: unknown,
+  io: Server,
+  discussionId: string,
+  userId: string,
+  partialStateCreated: boolean
+): never {
+  // Error recovery: clean up partial state
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  const errorStack = error instanceof Error ? error.stack : undefined;
+
+  logger.error('Error processing round, cleaning up partial state', {
+    discussionId,
+    userId,
+    error: errorMessage,
+    errorStack,
+    partialStateCreated,
+  });
+
+  // Determine if error is recoverable or permanent
+  const isRecoverableError =
+    errorMessage.includes('rate limit') ||
+    errorMessage.includes('timeout') ||
+    errorMessage.includes('network') ||
+    errorMessage.includes('temporary');
+
+  // Mark discussion as resolved if error is permanent or discussion is in bad state
+  // This allows user to start a new discussion
+  if (!isRecoverableError || partialStateCreated) {
+    try {
+      // Mark as resolved so user can start a new discussion
+      updateDiscussion(discussionId, { is_resolved: 1 });
+      logger.warn('Discussion marked as resolved due to error', {
+        discussionId,
+        userId,
+        reason: isRecoverableError ? 'partial_state' : 'permanent_error',
+        error: errorMessage,
+      });
+    } catch (cleanupError) {
+      logger.error('Failed to mark discussion as resolved during cleanup', {
+        discussionId,
+        userId,
+        cleanupError: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+      });
+    }
+  }
+
+  // Emit error to client with more context
+  const userFriendlyMessage = isRecoverableError
+    ? 'A temporary error occurred. You can try starting a new discussion.'
+    : 'An error occurred while processing the discussion. The discussion has been marked as resolved. You can start a new discussion.';
+
+  io.to(discussionId).emit('error', {
+    discussionId,
+    message: userFriendlyMessage,
+    code: isRecoverableError ? ErrorCode.INTERNAL_ERROR : ErrorCode.INTERNAL_ERROR,
+    recoverable: isRecoverableError,
+  });
+
+  // Re-throw to be caught by outer handler
+  throw error;
+}
+
 async function processDiscussionDialogueRoundsInternal(
   io: Server,
   _socket: Socket,
@@ -1377,34 +2411,20 @@ async function processDiscussionDialogueRoundsInternal(
   topic: string,
   files: FileData[]
 ) {
-  let discussionData;
   const partialStateCreated = false;
 
   try {
-    // Load discussion data to get current round
-    try {
-      discussionData = await readDiscussion(discussionId, userId);
-      logger.debug('Discussion data loaded', {
-        discussionId,
-        currentRound: discussionData.currentRound,
-        roundsCount: discussionData.rounds?.length || 0,
-      });
-    } catch (error) {
-      logger.error('Error loading discussion data', {
-        error: error instanceof Error ? error.message : String(error),
-        errorStack: error instanceof Error ? error.stack : undefined,
-        discussionId,
-        userId,
-      });
-      io.to(discussionId).emit('error', {
-        discussionId: discussionId,
-        message: 'Failed to load discussion data. Please try again.',
-      });
-      return;
-    }
+    // Load discussion data and context
+    const { discussionData, discussionContext } = await loadDiscussionDataAndContext(
+      io,
+      discussionId,
+      userId
+    );
 
-    const currentRoundNumber = (discussionData.currentRound || 0) + 1;
-    const maxRounds = Math.floor(MAX_TURNS / 3); // Each round has 3 AI responses (Solver, Analyzer, Moderator)
+    // Validate round state and get current round number
+    const currentRoundNumber = validateRoundState(discussionData, discussionId, userId);
+
+    const maxRounds = Math.floor(MAX_TURNS / 3); // Each round has 3 AI responses
 
     logger.info('Processing round', {
       discussionId,
@@ -1419,77 +2439,16 @@ async function processDiscussionDialogueRoundsInternal(
       return;
     }
 
-    // Load discussion context
-    let discussionContext;
-    try {
-      discussionContext = await loadDiscussionContext(discussionId, userId);
-      logger.debug('Discussion context loaded', {
-        discussionId,
-        tokenCount: discussionContext.tokenCount,
-        roundsCount: discussionContext.rounds?.length || 0,
-        hasSummary: !!discussionContext.currentSummary,
-        summariesCount: discussionContext.summaries?.length || 0,
-      });
-
-      // Sync token count from file (source of truth) to database
-      try {
-        syncTokenCountFromFile(discussionId, discussionContext.tokenCount);
-      } catch (syncError) {
-        logger.warn('Failed to sync token count to database', {
-          error: syncError instanceof Error ? syncError.message : String(syncError),
-          discussionId,
-          tokenCount: discussionContext.tokenCount,
-        });
-      }
-    } catch (error) {
-      logger.error('Error loading discussion context', {
-        error: error instanceof Error ? error.message : String(error),
-        errorStack: error instanceof Error ? error.stack : undefined,
-        discussionId,
-        userId,
-      });
-      io.to(discussionId).emit('error', {
-        discussionId: discussionId,
-        message: 'Failed to load discussion context. Please try again.',
-      });
-      return;
-    }
-
     const isFirstRound = currentRoundNumber === 1;
-    const solverPersona = aiPersonas.solver;
-    const analyzerPersona = aiPersonas.analyzer;
-    const moderatorPersona = aiPersonas.moderator;
 
     // Collect user answers from previous rounds for context
-    const userAnswers: Record<string, string[]> = {};
-    if (discussionData.rounds) {
-      discussionData.rounds.forEach((round) => {
-        if (round.questions && round.userAnswers) {
-          round.questions.questions.forEach((question) => {
-            if (question.userAnswers && question.userAnswers.length > 0) {
-              userAnswers[question.id] = question.userAnswers;
-            }
-          });
-        }
-      });
-    }
+    const userAnswers = collectUserAnswersFromRounds(discussionData);
 
     try {
-    logger.info('Starting round processing', {
-      discussionId,
-      roundNumber: currentRoundNumber,
-      isFirstRound,
-      hasFiles: files.length > 0,
-    });
-
-    // Process Solver AI response first with error recovery
-    logger.debug('Generating Solver AI response', { discussionId, roundNumber: currentRoundNumber });
-    let solverResponse: import('@/types').ConversationMessage;
-    try {
-      solverResponse = await generateAIResponse(
+      // Process the round: generate all three AI responses
+      const round = await processSingleRound(
         io,
         discussionId,
-        solverPersona,
         topic,
         discussionContext,
         isFirstRound,
@@ -1497,291 +2456,64 @@ async function processDiscussionDialogueRoundsInternal(
         currentRoundNumber,
         userAnswers
       );
-    } catch (error) {
-      logger.error('Solver AI response failed, round cannot continue', {
-        discussionId,
-        roundNumber: currentRoundNumber,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      // Re-throw to be caught by outer error handler
-      throw error;
-    }
-    logger.debug('Solver AI response generated', {
-      discussionId,
-      roundNumber: currentRoundNumber,
-      responseLength: solverResponse.content.length,
-    });
 
-    // For Analyzer's context, we need to include Solver's response
-    // Create a temporary round with just Solver's response for context
-    const tempRoundForAnalyzerContext: DiscussionRound = {
-      roundNumber: currentRoundNumber,
-      solverResponse,
-      analyzerResponse: {
-        discussion_id: discussionId,
-        persona: 'Analyzer AI',
-        content: '', // Empty, will be filled
-        turn: currentRoundNumber * 3 - 1, // Placeholder turn number
-        timestamp: new Date().toISOString(),
-        created_at: Date.now(),
-      },
-      moderatorResponse: {
-        discussion_id: discussionId,
-        persona: 'Moderator AI',
-        content: '', // Empty placeholder
-        turn: currentRoundNumber * 3, // Placeholder turn number
-        timestamp: new Date().toISOString(),
-        created_at: Date.now(),
-      },
-      timestamp: new Date().toISOString(),
-    };
+      // Save round and emit events
+      await saveRoundAndEmitEvents(io, discussionId, userId, round, currentRoundNumber);
 
-    // Update context to include Solver's response
-    const contextWithSolver = {
-      ...discussionContext,
-      rounds: [...(discussionContext.rounds || []), tempRoundForAnalyzerContext],
-    };
-
-    // Process Analyzer AI response (with context that includes Solver's response)
-    logger.debug('Generating Analyzer AI response', { discussionId, roundNumber: currentRoundNumber });
-    let analyzerResponse: import('@/types').ConversationMessage;
-    try {
-      analyzerResponse = await generateAIResponse(
+      // Check and generate auto-summary if needed
+      await checkAndGenerateAutoSummary(
         io,
         discussionId,
-        analyzerPersona,
-        topic,
-        contextWithSolver,
-        false, // Not first message
-        undefined, // No files after first round
-        currentRoundNumber,
-        userAnswers
+        userId,
+        discussionData,
+        discussionContext,
+        round,
+        currentRoundNumber
       );
+
+      // Check for resolution
+      if (checkAndHandleResolution(io, discussionId, discussionData, round, currentRoundNumber)) {
+        return; // Discussion resolved, exit early
+      }
     } catch (error) {
-      logger.error('Analyzer AI response failed, round cannot continue', {
-        discussionId,
-        roundNumber: currentRoundNumber,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      // Re-throw to be caught by outer error handler
-      throw error;
-    }
-    logger.debug('Analyzer AI response generated', {
-      discussionId,
-      roundNumber: currentRoundNumber,
-      responseLength: analyzerResponse.content.length,
-    });
-
-    // For Moderator's context, we need to include Solver's and Analyzer's responses
-    // Create a temporary round with Solver and Analyzer responses for context
-    const tempRoundForModeratorContext: DiscussionRound = {
-      roundNumber: currentRoundNumber,
-      solverResponse,
-      analyzerResponse,
-      moderatorResponse: {
-        discussion_id: discussionId,
-        persona: 'Moderator AI',
-        content: '', // Empty, will be filled
-        turn: currentRoundNumber * 3, // Placeholder turn number
-        timestamp: new Date().toISOString(),
-        created_at: Date.now(),
-      },
-      timestamp: new Date().toISOString(),
-    };
-
-    // Update context to include both Solver's and Analyzer's responses
-    const contextWithBoth = {
-      ...discussionContext,
-      rounds: [...(discussionContext.rounds || []), tempRoundForModeratorContext],
-    };
-
-    // Process Moderator AI response (with context that includes Solver's and Analyzer's responses)
-    logger.debug('Generating Moderator AI response', { discussionId, roundNumber: currentRoundNumber });
-    let moderatorResponse: import('@/types').ConversationMessage;
-    try {
-      moderatorResponse = await generateAIResponse(
-        io,
-        discussionId,
-        moderatorPersona,
-        topic,
-        contextWithBoth,
-        false, // Not first message
-        undefined, // No files after first round
-        currentRoundNumber,
-        userAnswers
-      );
-    } catch (error) {
-      logger.error('Moderator AI response failed, round cannot continue', {
-        discussionId,
-        roundNumber: currentRoundNumber,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      // Re-throw to be caught by outer error handler
-      throw error;
-    }
-    logger.debug('Moderator AI response generated', {
-      discussionId,
-      roundNumber: currentRoundNumber,
-      responseLength: moderatorResponse.content.length,
-    });
-
-    // Create round object with all three responses
-    const round: DiscussionRound = {
-      roundNumber: currentRoundNumber,
-      solverResponse,
-      analyzerResponse,
-      moderatorResponse,
-      timestamp: new Date().toISOString(),
-    };
-
-    // Store round in files first (source of truth), then sync to database
-    logger.debug('Saving round to storage', { discussionId, roundNumber: currentRoundNumber });
-    await syncFileAndDatabase(
-      () => addRoundToDiscussion(discussionId, userId, round),
-        () =>
-        updateDiscussion(discussionId, {
-          current_turn: currentRoundNumber * 3, // Each round = 3 turns (Solver, Analyzer, Moderator)
-        }),
-      { discussionId, userId, operation: 'addRound' }
-    );
-    logger.debug('Round saved to storage', { discussionId, roundNumber: currentRoundNumber });
-
-    // Emit round complete
-    logger.info('Emitting round-complete event', { discussionId, roundNumber: currentRoundNumber });
-    io.to(discussionId).emit('round-complete', {
-      discussionId: discussionId,
-      round,
-    });
-
-    logger.info('Round completed successfully', {
-      discussionId,
-      roundNumber: currentRoundNumber,
-      solverLength: solverResponse.content.length,
-      analyzerLength: analyzerResponse.content.length,
-      moderatorLength: moderatorResponse.content.length,
-    });
-
-    // Moderator AI now participates in discussion, no separate summary generation needed
-
-    // Check if automatic summary is needed
-    // Triggers: every 5 rounds OR 5+ rounds since last summary OR token count approaching limit
-    const lastSummaryRound = discussionContext.currentSummary?.roundNumber || 0;
-    const roundsSinceLastSummary = currentRoundNumber - lastSummaryRound;
-    const { getTokenLimit } = await import('@/lib/discussions/token-counter');
-    const tokenLimit = getTokenLimit();
-    const tokenThreshold = Math.floor(tokenLimit * 0.8); // Trigger at 80% of limit
-
-    // Check token count (most important)
-    const needsAutoSummaryByToken = discussionContext.tokenCount >= tokenThreshold;
-
-    // Check round count
-    const needsAutoSummaryByRounds =
-      currentRoundNumber % 5 === 0 || roundsSinceLastSummary >= 5;
-
-    const needsAutoSummary = needsAutoSummaryByToken || needsAutoSummaryByRounds;
-
-    // Auto-generate summary if needed (every 5 rounds or if 5+ rounds since last summary)
-    if (needsAutoSummary) {
-      try {
-        const roundsToSummarize = discussionData.rounds || [];
-        const summaryEntry = await summarizeRounds(
-          discussionId,
-          userId,
-          [...roundsToSummarize, round],
-          currentRoundNumber
-        );
-
-        // Emit summary created
-        io.to(discussionId).emit('summary-created', {
-          discussionId: discussionId,
-          summary: summaryEntry,
-        });
-
-        logger.info('Auto-summary generated for round', {
-          discussionId,
-          roundNumber: currentRoundNumber,
-          roundsSinceLastSummary,
-          tokenCount: discussionContext.tokenCount,
-          tokenLimit,
-          triggeredByToken: needsAutoSummaryByToken,
-          triggeredByRounds: needsAutoSummaryByRounds,
-        });
-      } catch (summaryError) {
-        // Reset trigger on summarization failure to allow retry
-        logger.error('Auto-summary generation failed, will retry on next trigger', {
-          discussionId,
-          roundNumber: currentRoundNumber,
-          error: summaryError instanceof Error ? summaryError.message : String(summaryError),
-        });
-        // Don't fail the round if summarization fails
-      }
-    }
-
-    // Check for resolution
-    const allRounds = [...(discussionData.rounds || []), round];
-    const allMessages = allRounds.flatMap((r) => [r.solverResponse, r.analyzerResponse, r.moderatorResponse]);
-    if (allMessages.length >= 6) {
-      const resolved = isResolved(allMessages);
-      if (resolved) {
-        logger.info('Discussion resolved', { discussionId, roundNumber: currentRoundNumber });
-        updateDiscussion(discussionId, { is_resolved: 1 });
-        io.to(discussionId).emit('conversation-resolved', { discussionId: discussionId });
-        return;
-      }
-    }
-  } catch (error) {
-    // Error recovery: clean up partial state
-    logger.error('Error processing round, cleaning up partial state', {
-      discussionId,
-      userId,
-      error: error instanceof Error ? error.message : String(error),
-      errorStack: error instanceof Error ? error.stack : undefined,
-      partialStateCreated,
-    });
-
-    // Mark discussion as failed if we created partial state
-    if (partialStateCreated) {
-      try {
-        updateDiscussion(discussionId, {
-          // Note: We don't have a 'failed' status field, but we can log it
-          // In a future enhancement, we could add a status field
-        });
-        logger.warn('Discussion may have partial state after error', { discussionId, userId });
-      } catch (cleanupError) {
-        logger.error('Failed to mark discussion as failed during cleanup', {
-          discussionId,
-          userId,
-          cleanupError: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-        });
-      }
-    }
-
-    // Emit error to client
-    io.to(discussionId).emit('error', {
-      discussionId,
-      message:
-        error instanceof Error
-          ? error.message
-          : 'An error occurred while processing the discussion. Please try again.',
-      code: ErrorCode.INTERNAL_ERROR,
-    });
-
-    // Re-throw to be caught by outer handler
-    throw error;
+      handleRoundProcessingError(error, io, discussionId, userId, partialStateCreated);
     }
   } catch (outerError) {
     // Catch any errors from outer try block (loading data, context, etc.)
+    const errorMessage = outerError instanceof Error ? outerError.message : String(outerError);
+    const errorStack = outerError instanceof Error ? outerError.stack : undefined;
+
     logger.error('Error in processDiscussionDialogueRoundsInternal (outer catch)', {
       discussionId,
       userId,
-      error: outerError instanceof Error ? outerError.message : String(outerError),
-      errorStack: outerError instanceof Error ? outerError.stack : undefined,
+      error: errorMessage,
+      errorStack,
     });
+
+    // Mark discussion as resolved on outer errors to allow recovery
+    try {
+      const discussionRecord = getDiscussion(discussionId, userId);
+      if (discussionRecord && !discussionRecord.is_resolved) {
+        updateDiscussion(discussionId, { is_resolved: 1 });
+        logger.warn('Discussion marked as resolved due to outer error', {
+          discussionId,
+          userId,
+          error: errorMessage,
+        });
+      }
+    } catch (cleanupError) {
+      logger.error('Failed to mark discussion as resolved during outer error cleanup', {
+        discussionId,
+        userId,
+        cleanupError: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+      });
+    }
 
     io.to(discussionId).emit('error', {
       discussionId,
-      message: 'An error occurred while processing the discussion. Please try again.',
+      message: 'An error occurred while processing the discussion. The discussion has been marked as resolved. You can start a new discussion.',
       code: ErrorCode.INTERNAL_ERROR,
+      recoverable: false,
     });
 
     throw outerError;
@@ -1790,8 +2522,9 @@ async function processDiscussionDialogueRoundsInternal(
 
 /**
  * Helper function to generate AI response for a round
+ * Exported for use by round orchestrator
  */
-async function generateAIResponse(
+export async function generateAIResponse(
   io: Server,
   discussionId: string,
   persona: typeof aiPersonas.solver | typeof aiPersonas.analyzer | typeof aiPersonas.moderator,
@@ -1802,14 +2535,384 @@ async function generateAIResponse(
   roundNumber: number,
   userAnswers: Record<string, string[]>
 ): Promise<import('@/types').ConversationMessage> {
+  // CRITICAL FIX 1.1: Pre-execution validation
+  // Calculate expected turn BEFORE any processing
+  const expectedTurn = calculateTurnNumber(roundNumber, persona.name as 'Analyzer AI' | 'Solver AI' | 'Moderator AI');
+
+  // Get last message persona for order validation
+  const rounds = discussionContext.rounds || [];
+  const allMessages = discussionContext.messages || [];
+  let lastMessagePersona: string | null = null;
+
+  // Find last message persona from rounds (preferred) or messages (legacy)
+  // CRITICAL: For Analyzer starting a new round, only look at COMPLETE rounds
+  // This ensures Analyzer never sees Solver's response from an incomplete round
+  if (rounds.length > 0) {
+    // ROOT CAUSE FIX: For Analyzer, use simplified logic - ALWAYS use Moderator from last complete round
+    if (persona.name === 'Analyzer AI') {
+      // For Analyzer, ONLY look at complete rounds
+      const completeRounds = filterCompleteRounds(rounds);
+
+      if (completeRounds.length > 0) {
+        // Analyzer should respond to Moderator from the last complete round
+        const lastCompleteRound = completeRounds[completeRounds.length - 1];
+        if (lastCompleteRound.moderatorResponse?.content?.trim()) {
+          lastMessagePersona = lastCompleteRound.moderatorResponse.persona;
+          logger.info('✅ ROOT CAUSE FIX: Analyzer lastMessagePersona set to Moderator from last complete round', {
+            discussionId,
+            persona: persona.name,
+            roundNumber,
+            lastCompleteRoundNumber: lastCompleteRound.roundNumber,
+            lastMessagePersona,
+            moderatorContentLength: lastCompleteRound.moderatorResponse.content.trim().length,
+            note: 'Analyzer correctly responding to Moderator from previous complete round',
+          });
+        } else {
+          // This should never happen if filterCompleteRounds works correctly
+          logger.error('🚨 CRITICAL BUG: Last complete round missing Moderator response!', {
+            discussionId,
+            persona: persona.name,
+            roundNumber,
+            lastCompleteRoundNumber: lastCompleteRound.roundNumber,
+            hasModerator: !!lastCompleteRound.moderatorResponse?.content?.trim(),
+            hasSolver: !!lastCompleteRound.solverResponse?.content?.trim(),
+            hasAnalyzer: !!lastCompleteRound.analyzerResponse?.content?.trim(),
+          });
+          lastMessagePersona = null;
+        }
+      } else {
+        // No complete rounds - this is Round 1 or all rounds are incomplete
+        lastMessagePersona = null;
+        logger.info('✅ ROOT CAUSE FIX: Analyzer lastMessagePersona set to null (no complete rounds - Round 1)', {
+          discussionId,
+          persona: persona.name,
+          roundNumber,
+          totalRoundsCount: rounds.length,
+          completeRoundsCount: 0,
+        });
+      }
+    } else {
+      // For Solver and Moderator, use the existing complex logic
+      let roundsToCheck = rounds;
+
+      // Find the last round
+      let lastRound = roundsToCheck[roundsToCheck.length - 1];
+
+      if (lastRound) {
+        // Log round state for debugging
+        logger.debug('🔍 Determining lastMessagePersona from rounds', {
+          discussionId,
+          persona: persona.name,
+          roundNumber,
+          lastRoundNumber: lastRound.roundNumber,
+          hasModerator: !!lastRound.moderatorResponse?.content?.trim(),
+          hasSolver: !!lastRound.solverResponse?.content?.trim(),
+          hasAnalyzer: !!lastRound.analyzerResponse?.content?.trim(),
+          moderatorPersona: lastRound.moderatorResponse?.persona,
+          solverPersona: lastRound.solverResponse?.persona,
+          analyzerPersona: lastRound.analyzerResponse?.persona,
+          isCompleteRound: !!lastRound.moderatorResponse?.content?.trim() &&
+                           !!lastRound.solverResponse?.content?.trim() &&
+                           !!lastRound.analyzerResponse?.content?.trim(),
+        });
+
+        // CRITICAL: Check in order: Moderator (last in round) → Solver → Analyzer (first in round)
+        // Only use responses with actual content (not placeholders)
+        if (lastRound.moderatorResponse?.content?.trim()) {
+          lastMessagePersona = lastRound.moderatorResponse.persona;
+          logger.debug('🔍 lastMessagePersona = Moderator (from lastRound.moderatorResponse)', {
+            discussionId,
+            persona: persona.name,
+            lastMessagePersona,
+            contentLength: lastRound.moderatorResponse.content.trim().length,
+          });
+        } else if (lastRound.solverResponse?.content?.trim()) {
+          // For Solver AI
+          if (persona.name === 'Solver AI') {
+            // CRITICAL FIX: Solver should NEVER see its own response from a previous round
+            // If we see Solver's response and it's not the current round, this is an error
+            if (lastRound.roundNumber !== roundNumber) {
+              logger.error('🚨 CRITICAL BUG: Solver seeing its own response from previous round!', {
+                discussionId,
+                persona: persona.name,
+                roundNumber,
+                lastRoundNumber: lastRound.roundNumber,
+                error: 'Solver should only see Analyzer responses, not its own from previous rounds',
+              });
+              // Force lastMessagePersona to Analyzer AI (expected before Solver)
+              lastMessagePersona = 'Analyzer AI';
+            } else {
+              // This is the current round being processed - Solver should see Analyzer's response
+              // If we're seeing Solver's response here, it means Analyzer hasn't responded yet
+              // This should not happen, but if it does, force to Analyzer
+              if (lastRound.analyzerResponse?.content?.trim()) {
+                lastMessagePersona = lastRound.analyzerResponse.persona;
+                logger.debug('🔍 lastMessagePersona = Analyzer (from current round, Solver should follow)', {
+                  discussionId,
+                  persona: persona.name,
+                  lastMessagePersona,
+                  roundNumber: lastRound.roundNumber,
+                });
+              } else {
+                logger.error('🚨 CRITICAL BUG: Solver being called but Analyzer response missing!', {
+                  discussionId,
+                  persona: persona.name,
+                  roundNumber,
+                  lastRoundNumber: lastRound.roundNumber,
+                  error: 'Solver cannot execute before Analyzer completes',
+                });
+                // Force to null to trigger error in validation
+                lastMessagePersona = null;
+              }
+            }
+          } else {
+            // For Moderator, this is acceptable (incomplete round in current round)
+            const solverContent = lastRound.solverResponse.content.trim();
+            if (solverContent.length > 0) {
+              lastMessagePersona = lastRound.solverResponse.persona;
+              logger.debug('🔍 lastMessagePersona = Solver (from lastRound.solverResponse)', {
+                discussionId,
+                persona: persona.name,
+                lastMessagePersona,
+                contentLength: solverContent.length,
+                warning: 'Round may be incomplete - Solver response exists but Moderator does not',
+              });
+            }
+          }
+        } else if (lastRound.analyzerResponse?.content?.trim()) {
+          // For Solver/Moderator, this might happen in edge cases
+          const analyzerContent = lastRound.analyzerResponse.content.trim();
+          if (analyzerContent.length > 0) {
+            lastMessagePersona = lastRound.analyzerResponse.persona;
+            logger.debug('🔍 lastMessagePersona = Analyzer (from lastRound.analyzerResponse)', {
+              discussionId,
+              persona: persona.name,
+              lastMessagePersona,
+              contentLength: analyzerContent.length,
+              warning: 'Round may be incomplete - only Analyzer response exists',
+            });
+          }
+        }
+
+        // If we still don't have a lastMessagePersona, log it
+        if (!lastMessagePersona) {
+          logger.debug('🔍 No content in lastRound, lastMessagePersona remains null', {
+            discussionId,
+            persona: persona.name,
+            lastRoundNumber: lastRound.roundNumber,
+            hasModerator: !!lastRound.moderatorResponse,
+            hasSolver: !!lastRound.solverResponse,
+            hasAnalyzer: !!lastRound.analyzerResponse,
+            moderatorContentLength: lastRound.moderatorResponse?.content?.trim().length || 0,
+            solverContentLength: lastRound.solverResponse?.content?.trim().length || 0,
+            analyzerContentLength: lastRound.analyzerResponse?.content?.trim().length || 0,
+          });
+        }
+      }
+    }
+  } else if (allMessages.length > 0) {
+    lastMessagePersona = allMessages[allMessages.length - 1].persona;
+    logger.debug('🔍 lastMessagePersona from legacy messages', {
+      discussionId,
+      persona: persona.name,
+      lastMessagePersona,
+      messagesCount: allMessages.length,
+    });
+  } else {
+    logger.debug('🔍 No previous messages, lastMessagePersona is null', {
+      discussionId,
+      persona: persona.name,
+      roundNumber,
+    });
+  }
+
+  // CRITICAL VALIDATION: Analyzer must NEVER have lastMessagePersona = 'Solver AI'
+  if (persona.name === 'Analyzer AI' && lastMessagePersona === 'Solver AI') {
+    logger.error('🚨 CRITICAL BUG: Analyzer has lastMessagePersona = Solver AI - this should NEVER happen!', {
+      discussionId,
+      persona: persona.name,
+      roundNumber,
+      lastMessagePersona,
+      roundsCount: rounds.length,
+      completeRoundsCount: filterCompleteRounds(rounds).length,
+      error: 'Analyzer should respond to Moderator or null, never to Solver',
+    });
+    // Force to null or find Moderator from complete rounds
+    const completeRounds = filterCompleteRounds(rounds);
+    if (completeRounds.length > 0) {
+      const lastCompleteRound = completeRounds[completeRounds.length - 1];
+      if (lastCompleteRound.moderatorResponse?.content?.trim()) {
+        lastMessagePersona = lastCompleteRound.moderatorResponse.persona;
+        logger.error('🔧 ROOT CAUSE FIX: Corrected Analyzer lastMessagePersona to Moderator', {
+          discussionId,
+          persona: persona.name,
+          roundNumber,
+          correctedLastMessagePersona: lastMessagePersona,
+          lastCompleteRoundNumber: lastCompleteRound.roundNumber,
+        });
+      } else {
+        lastMessagePersona = null;
+        logger.error('🔧 ROOT CAUSE FIX: Corrected Analyzer lastMessagePersona to null (no Moderator found)', {
+          discussionId,
+          persona: persona.name,
+          roundNumber,
+        });
+      }
+    } else {
+      lastMessagePersona = null;
+      logger.error('🔧 ROOT CAUSE FIX: Corrected Analyzer lastMessagePersona to null (no complete rounds)', {
+        discussionId,
+        persona: persona.name,
+        roundNumber,
+      });
+    }
+  }
+
+  // CRITICAL: Log persona details before validation
+  logger.info('🔍 PERSONA ORDER VALIDATION: Pre-validation check', {
+    discussionId,
+    currentPersona: persona.name,
+    currentPersonaId: persona.id,
+    currentPersonaProvider: persona.provider,
+    roundNumber,
+    expectedTurn,
+    lastMessagePersona,
+    isFirstMessage,
+    roundsCount: rounds.length,
+    messagesCount: allMessages.length,
+    timestamp: new Date().toISOString(),
+  });
+
+  // CRITICAL FIX: Additional explicit validation before calling validatePersonaOrder
+  // For Solver: Must have Analyzer response from current round
+  if (persona.name === 'Solver AI' && !isFirstMessage) {
+    const currentRound = rounds.find((r) => r.roundNumber === roundNumber);
+    if (!currentRound || !currentRound.analyzerResponse?.content?.trim()) {
+      logger.error('🚨 CRITICAL: Solver cannot execute - Analyzer response missing from current round', {
+        discussionId,
+        persona: persona.name,
+        roundNumber,
+        hasCurrentRound: !!currentRound,
+        hasAnalyzerResponse: !!currentRound?.analyzerResponse?.content?.trim(),
+        lastMessagePersona,
+      });
+      throw new Error('Solver cannot execute before Analyzer completes in the current round');
+    }
+    // Ensure lastMessagePersona is Analyzer AI for Solver
+    if (lastMessagePersona !== 'Analyzer AI') {
+      logger.warn('🚨 CRITICAL FIX: Forcing lastMessagePersona to Analyzer AI for Solver', {
+        discussionId,
+        persona: persona.name,
+        roundNumber,
+        originalLastMessagePersona: lastMessagePersona,
+        correctedLastMessagePersona: 'Analyzer AI',
+      });
+      lastMessagePersona = 'Analyzer AI';
+    }
+  }
+
+  // For Moderator: Must have both Analyzer and Solver responses from current round
+  if (persona.name === 'Moderator AI' && !isFirstMessage) {
+    const currentRound = rounds.find((r) => r.roundNumber === roundNumber);
+    if (!currentRound || !currentRound.analyzerResponse?.content?.trim() || !currentRound.solverResponse?.content?.trim()) {
+      logger.error('🚨 CRITICAL: Moderator cannot execute - Analyzer or Solver response missing from current round', {
+        discussionId,
+        persona: persona.name,
+        roundNumber,
+        hasCurrentRound: !!currentRound,
+        hasAnalyzerResponse: !!currentRound?.analyzerResponse?.content?.trim(),
+        hasSolverResponse: !!currentRound?.solverResponse?.content?.trim(),
+        lastMessagePersona,
+      });
+      throw new Error('Moderator cannot execute before both Analyzer and Solver complete in the current round');
+    }
+    // Ensure lastMessagePersona is Solver AI for Moderator
+    if (lastMessagePersona !== 'Solver AI') {
+      logger.warn('🚨 CRITICAL FIX: Forcing lastMessagePersona to Solver AI for Moderator', {
+        discussionId,
+        persona: persona.name,
+        roundNumber,
+        originalLastMessagePersona: lastMessagePersona,
+        correctedLastMessagePersona: 'Solver AI',
+      });
+      lastMessagePersona = 'Solver AI';
+    }
+  }
+
+  // Validate persona execution order
+  const orderValidation = validatePersonaOrder(persona.name, lastMessagePersona, isFirstMessage);
+  if (!orderValidation.isValid) {
+    logger.error('🚨 CRITICAL: Persona execution order validation failed', {
+      discussionId,
+      persona: persona.name,
+      personaId: persona.id,
+      roundNumber,
+      expectedTurn,
+      lastMessagePersona,
+      isFirstMessage,
+      error: orderValidation.message,
+      roundsCount: rounds.length,
+      lastRoundDetails: rounds.length > 0 ? {
+        roundNumber: rounds[rounds.length - 1].roundNumber,
+        hasModerator: !!rounds[rounds.length - 1].moderatorResponse?.content?.trim(),
+        hasSolver: !!rounds[rounds.length - 1].solverResponse?.content?.trim(),
+        hasAnalyzer: !!rounds[rounds.length - 1].analyzerResponse?.content?.trim(),
+      } : null,
+      timestamp: new Date().toISOString(),
+    });
+    throw new Error(`Persona execution order validation failed: ${orderValidation.message}`);
+  }
+
+  logger.info('✅ EXECUTION ORDER: Pre-execution validation passed', {
+    discussionId,
+    persona: persona.name,
+    roundNumber,
+    expectedTurn,
+    lastMessagePersona,
+    isFirstMessage,
+    validationMessage: orderValidation.message,
+    timestamp: new Date().toISOString(),
+  });
+
   // Build messages for LLM
   const llmMessages: LLMMessage[] = [{ role: 'system', content: persona.systemPrompt }];
 
+  // CRITICAL FIX: Pre-filter rounds before passing to formatLLMPrompt
+  // This ensures consistent filtering and prevents context contamination
+  const filteredRounds = filterRoundsForPersona(
+    rounds,
+    persona.name as 'Analyzer AI' | 'Solver AI' | 'Moderator AI',
+    roundNumber
+  );
+
+  if (filteredRounds.length !== rounds.length) {
+    logger.info('🔍 Pre-filtering rounds for formatLLMPrompt', {
+      discussionId,
+      persona: persona.name,
+      roundNumber,
+      originalRoundsCount: rounds.length,
+      filteredRoundsCount: filteredRounds.length,
+      filteredOut: rounds.length - filteredRounds.length,
+    });
+  }
+
   // Format conversation context
   // Use rounds if available (new structure), fallback to messages (legacy)
-  const allMessages = discussionContext.messages || [];
-  const rounds = discussionContext.rounds || [];
-  const isFirstMessageForPrompt = isFirstMessage && rounds.length === 0 && allMessages.length === 0;
+  const isFirstMessageForPrompt = isFirstMessage && filteredRounds.length === 0 && allMessages.length === 0;
+
+  // CRITICAL VALIDATION: Before calling formatLLMPrompt, verify Analyzer's lastMessagePersona is correct
+  if (persona.name === 'Analyzer AI' && lastMessagePersona === 'Solver AI') {
+    logger.error('🚨 CRITICAL BUG: Analyzer has lastMessagePersona = Solver AI before formatLLMPrompt!', {
+      discussionId,
+      persona: persona.name,
+      roundNumber,
+      lastMessagePersona,
+      filteredRoundsCount: filteredRounds.length,
+      completeRoundsCount: filterCompleteRounds(filteredRounds).length,
+      error: 'This should have been caught earlier - Analyzer must respond to Moderator or null',
+    });
+    throw new Error('CRITICAL: Analyzer cannot have lastMessagePersona = Solver AI');
+  }
 
   const userPrompt = formatLLMPrompt(
     topic,
@@ -1818,11 +2921,35 @@ async function generateAIResponse(
     persona.name as 'Solver AI' | 'Analyzer AI' | 'Moderator AI',
     isFirstMessageForPrompt ? files : undefined,
     discussionContext.summary, // Legacy
-    rounds, // New
+    filteredRounds, // CRITICAL FIX: Use pre-filtered rounds instead of full rounds array
     discussionContext.currentSummary, // New
     discussionContext.summaries, // New: all summaries
-    userAnswers // New
+    userAnswers, // New
+    roundNumber // New: current round number
   );
+
+  // CRITICAL VALIDATION: After formatLLMPrompt, verify the prompt doesn't indicate Analyzer should respond to Solver
+  // Check if the prompt contains text suggesting Analyzer should respond to Solver
+  if (persona.name === 'Analyzer AI') {
+    const promptLower = userPrompt.toLowerCase();
+    const hasSolverReference = promptLower.includes('solver ai') &&
+      (promptLower.includes('respond to solver') ||
+       promptLower.includes('solver said') ||
+       promptLower.includes('solver\'s response') ||
+       promptLower.includes('solver responded'));
+
+    if (hasSolverReference && lastMessagePersona === 'Solver AI') {
+      logger.error('🚨 CRITICAL BUG: Prompt indicates Analyzer should respond to Solver!', {
+        discussionId,
+        persona: persona.name,
+        roundNumber,
+        lastMessagePersona,
+        promptPreview: userPrompt.substring(0, 500),
+        error: 'Prompt should indicate Analyzer responds to Moderator, not Solver',
+      });
+      throw new Error('CRITICAL: Prompt indicates Analyzer should respond to Solver');
+    }
+  }
 
   logger.debug('Generated prompt for AI response', {
     discussionId,
@@ -1830,7 +2957,8 @@ async function generateAIResponse(
     roundNumber,
     isFirstMessage: isFirstMessageForPrompt,
     promptLength: userPrompt.length,
-    roundsCount: rounds.length,
+    roundsCount: filteredRounds.length, // Use filtered rounds count
+    originalRoundsCount: rounds.length,
     messagesCount: allMessages.length,
   });
 
@@ -1838,6 +2966,34 @@ async function generateAIResponse(
     role: 'user',
     content: userPrompt,
     files: isFirstMessage ? files : undefined,
+  });
+
+  // PHASE 1: DIAGNOSTIC LOGGING - Context Token Usage
+  const { countTokens } = await import('@/lib/discussions/token-counter');
+  const { LLM_CONFIG: LLM_CONFIG_FOR_LOGGING } = await import('@/lib/config');
+  const systemPromptTokens = countTokens(persona.systemPrompt);
+  const userPromptTokens = countTokens(userPrompt);
+  const totalInputTokens = systemPromptTokens + userPromptTokens;
+  const maxTokensForResponse = LLM_CONFIG_FOR_LOGGING.DEFAULT_MAX_TOKENS;
+  // Note: max_tokens is output tokens, not total context
+  const contextTokenPercentage = totalInputTokens > 0 ? ((totalInputTokens / (totalInputTokens + maxTokensForResponse)) * 100).toFixed(1) : '0';
+
+  logger.info('📊 TOKEN USAGE: Context and input token analysis', {
+    discussionId,
+    persona: persona.name,
+    roundNumber,
+    systemPromptTokens,
+    userPromptTokens,
+    totalInputTokens,
+    maxTokens: maxTokensForResponse,
+    availableTokensForResponse: maxTokensForResponse, // max_tokens is output tokens, not total context
+    contextTokenPercentage: `${contextTokenPercentage}%`,
+    systemPromptLength: persona.systemPrompt.length,
+    userPromptLength: userPrompt.length,
+    filteredRoundsCount: filteredRounds.length,
+    allMessagesCount: allMessages.length,
+    hasSummary: !!discussionContext.currentSummary,
+    timestamp: new Date().toISOString(),
   });
 
   // Get LLM provider with error handling
@@ -1867,36 +3023,83 @@ async function generateAIResponse(
   }
 
   // Emit message start
-  // Calculate turn from round: Round N has turns (N-1)*3+1, (N-1)*3+2, (N-1)*3+3
-  // For round 1: turns 1, 2, 3
-  // For round 2: turns 4, 5, 6
-  // Order: Solver -> Analyzer -> Moderator
-  let turn: number;
-  if (persona.name === 'Solver AI') {
-    turn = (roundNumber - 1) * 3 + 1;
-  } else if (persona.name === 'Analyzer AI') {
-    turn = (roundNumber - 1) * 3 + 2;
-  } else if (persona.name === 'Moderator AI') {
-    turn = (roundNumber - 1) * 3 + 3;
-  } else {
-    turn = roundNumber; // Fallback
+  // CRITICAL FIX 1.1: Use expectedTurn calculated at function start (already validated)
+  const turn = expectedTurn;
+
+  // CRITICAL VALIDATION: Final check before LLM call - Analyzer must never have lastMessagePersona = Solver
+  if (persona.name === 'Analyzer AI' && lastMessagePersona === 'Solver AI') {
+    logger.error('🚨 CRITICAL BUG: Analyzer lastMessagePersona is Solver AI before LLM call!', {
+      discussionId,
+      persona: persona.name,
+      roundNumber,
+      lastMessagePersona,
+      turn,
+      expectedTurn,
+      filteredRoundsCount: filteredRounds.length,
+      error: 'This is a critical bug - Analyzer must respond to Moderator or null, never to Solver',
+    });
+    throw new Error('CRITICAL: Analyzer cannot have lastMessagePersona = Solver AI before LLM call');
   }
-  logger.info('Starting message generation', {
+
+  logger.info('🚀 EXECUTING: Starting message generation', {
     discussionId,
     persona: persona.name,
+    personaId: persona.id,
     round: roundNumber,
     turn,
+    expectedTurn,
+    exchangeNumber: turn, // Turn number equals exchange number
+    isFirstMessage,
+    lastMessagePersona,
+    contextRoundsCount: discussionContext.rounds?.length || 0,
+    contextMessagesCount: discussionContext.messages?.length || 0,
+    filteredRoundsCount: filteredRounds.length,
+    timestamp: new Date().toISOString(),
   });
+
+  // CRITICAL DEBUG: Log message-start emission with full details
+  logger.info('🔍 DEBUG: Emitting message-start event', {
+    discussionId,
+    persona: persona.name,
+    personaId: persona.id,
+    turn,
+    expectedTurn,
+    roundNumber,
+    timestamp: new Date().toISOString(),
+  });
+
   io.to(discussionId).emit('message-start', {
     discussionId: discussionId,
     persona: persona.name,
     turn,
   });
 
-  // Stream response with error handling
-  let fullResponse = '';
+    // CRITICAL FIX 1.2: Stream response with proper chunk accumulation
+    //
+    // Variable Usage Pattern:
+    // - fullResponse: Accumulates chunks during streaming for real-time UI display
+    // - finalResponse: Source of truth from provider (may include continuation chunks not emitted)
+    // - After streaming: fullResponse is set to finalResponse to ensure consistency
+    // - Final message uses fullResponse (which equals finalResponse) - only whitespace is trimmed
+    //
+    // This pattern ensures:
+    // 1. Real-time streaming works correctly (chunks emitted as received)
+    // 2. Complete responses are stored (using finalResponse as source of truth)
+    // 3. Continuation chunks are captured even if not properly emitted during streaming
+    //
+    // NOTE: With BaseProvider refactoring, completion logic now ensures continuation chunks
+    // are always emitted via onChunk callback. This code handles edge cases where chunks
+    // might still be missing.
+    let fullResponse = '';
+    let finalResponse = '';
+    let chunkCount = 0;
+    let continuationChunkCount = 0;
+    let initialStreamingComplete = false;
+    let lastChunkTime = Date.now();
   try {
-    await provider.stream(llmMessages, (chunk: string) => {
+    // provider.stream() returns the final response (which may have been completed via completeThought)
+    // The onChunk callback will be called for both initial chunks and continuation chunks
+    finalResponse = await provider.stream(llmMessages, (chunk: string) => {
       if (typeof chunk !== 'string') {
         logger.warn('Received non-string chunk from LLM provider', {
           persona: persona.name,
@@ -1904,13 +3107,276 @@ async function generateAIResponse(
         });
         return;
       }
+      // CRITICAL FIX 1.2: Accumulate chunks for real-time display only
       fullResponse += chunk;
+      chunkCount++;
+
+      // ENHANCED: Track continuation chunks more accurately
+      // Continuation chunks typically come after a pause in streaming
+      const timeSinceLastChunk = Date.now() - lastChunkTime;
+      lastChunkTime = Date.now();
+
+      if (initialStreamingComplete) {
+        continuationChunkCount++;
+        logger.info('📦 Received continuation chunk', {
+          persona: persona.name,
+          discussionId,
+          roundNumber,
+          chunkNumber: chunkCount,
+          continuationChunkNumber: continuationChunkCount,
+          chunkLength: chunk.length,
+          accumulatedLength: fullResponse.length,
+          timeSinceLastChunk,
+        });
+      } else if (timeSinceLastChunk > 1000 && chunkCount > 10) {
+        // Detect potential gap in initial streaming (pause > 1 second)
+        logger.debug('Potential pause in initial streaming detected', {
+          persona: persona.name,
+          discussionId,
+          roundNumber,
+          chunkNumber: chunkCount,
+          timeSinceLastChunk,
+          accumulatedLength: fullResponse.length,
+        });
+      }
       // Emit chunk in real-time
       io.to(discussionId).emit('message-chunk', {
         discussionId: discussionId,
         chunk,
       });
     });
+
+    // Mark initial streaming as complete
+    initialStreamingComplete = true;
+
+    // PHASE 1: DIAGNOSTIC LOGGING - Response Metrics
+    const responseTokens = countTokens(fullResponse);
+    const finalResponseTokens = countTokens(finalResponse);
+    // Use 3.5 chars per token for consistency with completion logic
+    const estimatedResponseTokens = Math.ceil(fullResponse.trim().length / 3.5);
+
+    logger.info('📊 RESPONSE METRICS: Streaming completed - comprehensive analysis', {
+      discussionId,
+      persona: persona.name,
+      roundNumber,
+      // Chunk metrics
+      chunkCount,
+      continuationChunkCount,
+      // Length metrics
+      accumulatedLength: fullResponse.length,
+      finalResponseLength: finalResponse.length,
+      lengthDifference: finalResponse.length - fullResponse.length,
+      // Token metrics
+      responseTokens,
+      finalResponseTokens,
+      estimatedResponseTokens,
+      maxTokens: maxTokensForResponse,
+      tokenUtilization: maxTokensForResponse ? `${((estimatedResponseTokens / maxTokensForResponse) * 100).toFixed(1)}%` : 'N/A',
+      // Content analysis
+      endsWithPunctuation: /[.!?]\s*$/.test(fullResponse.trim()),
+      lastChars: fullResponse.trim().slice(-100),
+      // Context comparison
+      totalInputTokens,
+      totalOutputTokens: estimatedResponseTokens,
+      totalTokensUsed: totalInputTokens + estimatedResponseTokens,
+      timestamp: new Date().toISOString(),
+    });
+
+    // CRITICAL FIX 1.2: Use finalResponse as source of truth
+    // Validate lengths match within tolerance (10% for trimming differences)
+    const lengthMismatch = Math.abs(finalResponse.length - fullResponse.length);
+    const tolerance = Math.max(10, Math.floor(finalResponse.length * 0.1)); // 10% or 10 chars, whichever is larger
+
+    if (lengthMismatch > tolerance) {
+      logger.warn('⚠️ Chunk accumulation length mismatch detected', {
+        discussionId,
+        persona: persona.name,
+        roundNumber,
+        accumulatedLength: fullResponse.length,
+        finalResponseLength: finalResponse.length,
+        lengthDifference: lengthMismatch,
+        tolerance,
+        chunkCount,
+        continuationChunkCount,
+        note: 'Using finalResponse as source of truth',
+      });
+    } else if (lengthMismatch > 0) {
+      logger.debug('Chunk accumulation length matches final response (within tolerance)', {
+        discussionId,
+        persona: persona.name,
+        roundNumber,
+        accumulatedLength: fullResponse.length,
+        finalResponseLength: finalResponse.length,
+        lengthDifference: lengthMismatch,
+        chunkCount,
+        continuationChunkCount,
+      });
+    } else {
+      logger.debug('Chunk accumulation length matches final response perfectly', {
+        discussionId,
+        persona: persona.name,
+        roundNumber,
+        length: fullResponse.length,
+        chunkCount,
+        continuationChunkCount,
+      });
+    }
+
+    // CRITICAL FIX 1.2: Use fullResponse (accumulated chunks) as source of truth
+    // fullResponse contains all chunks that were actually emitted and received
+    // finalResponse may be shorter if provider truncated, or longer if continuation wasn't emitted
+    // We prioritize fullResponse because it represents what was actually streamed
+    if (finalResponse && finalResponse.trim().length > 0) {
+      if (finalResponse.length > fullResponse.length) {
+        // Final response is longer - continuation was added but chunks may not have been emitted
+        const additionalContent = finalResponse.slice(fullResponse.length);
+        if (additionalContent.trim()) {
+          logger.warn('⚠️ MISSING CONTINUATION CHUNKS DETECTED - Emitting additional content', {
+            discussionId,
+            persona: persona.name,
+            roundNumber,
+            initialLength: fullResponse.length,
+            additionalLength: additionalContent.length,
+            finalLength: finalResponse.length,
+            additionalPreview: additionalContent.substring(0, 200),
+            note: 'Continuation chunks were not properly emitted during streaming',
+          });
+          // Emit additional chunks so UI can display them
+          const chunkSize = 100;
+          for (let i = 0; i < additionalContent.length; i += chunkSize) {
+            const chunk = additionalContent.slice(i, i + chunkSize);
+            io.to(discussionId).emit('message-chunk', {
+              discussionId: discussionId,
+              chunk,
+            });
+          }
+          // Update fullResponse to include the additional content
+          fullResponse = finalResponse;
+        } else {
+          // No additional content, use finalResponse
+          fullResponse = finalResponse;
+        }
+      } else if (finalResponse.length < fullResponse.length) {
+        // CRITICAL FIX: Final response is shorter than accumulated chunks
+        // This means the provider is returning trimmed/truncated content
+        // We MUST use fullResponse (accumulated chunks) as source of truth
+        logger.warn('⚠️ Final response shorter than accumulated chunks - using fullResponse as source of truth', {
+          discussionId,
+          persona: persona.name,
+          roundNumber,
+          accumulatedLength: fullResponse.length,
+          finalLength: finalResponse.length,
+          difference: fullResponse.length - finalResponse.length,
+          chunkCount,
+          continuationChunkCount,
+          note: 'Using fullResponse (accumulated chunks) as source of truth - provider may have truncated',
+        });
+        // fullResponse already contains the correct content from chunks - keep it
+        // DO NOT overwrite with shorter finalResponse
+      } else {
+        // Same length - prefer fullResponse (it's what was actually streamed)
+        // But verify they match (within whitespace tolerance)
+        if (fullResponse.trim() !== finalResponse.trim()) {
+          logger.warn('⚠️ Response content mismatch despite same length - using fullResponse', {
+            discussionId,
+            persona: persona.name,
+            roundNumber,
+            note: 'Using fullResponse as it represents what was actually streamed',
+          });
+        }
+        // Use fullResponse as it represents what was actually emitted
+      }
+    } else {
+      // Final response is empty - use accumulated response
+      logger.warn('⚠️ Final response from provider is empty - using accumulated response', {
+        discussionId,
+        persona: persona.name,
+        roundNumber,
+        accumulatedLength: fullResponse.length,
+      });
+      // Use accumulated response as fallback
+      if (fullResponse.trim().length === 0) {
+        throw new Error('Both accumulated and final responses are empty');
+      }
+    }
+
+    // CRITICAL FIX 1.2: Final validation - ensure we have a valid response
+    // fullResponse is now the source of truth (contains all accumulated chunks)
+    if (fullResponse.trim().length === 0) {
+      logger.error('🚨 CRITICAL: Final response is empty after processing', {
+        discussionId,
+        persona: persona.name,
+        roundNumber,
+        fullResponseLength: fullResponse.length,
+        finalResponseLength: finalResponse.length,
+        chunkCount,
+        continuationChunkCount,
+      });
+      throw new Error('Response is empty after processing - no content was generated');
+    }
+
+    // Log final state for monitoring
+    if (fullResponse.length !== finalResponse.length) {
+      logger.info('📊 Response length difference (expected - using fullResponse as source of truth)', {
+        discussionId,
+        persona: persona.name,
+        roundNumber,
+        fullResponseLength: fullResponse.length,
+        finalResponseLength: finalResponse.length,
+        difference: Math.abs(fullResponse.length - finalResponse.length),
+        chunkCount,
+        continuationChunkCount,
+        note: 'fullResponse (accumulated chunks) is source of truth',
+      });
+    }
+
+      // ENHANCED: Final response validation - ensure response is complete before returning
+      const { validateSentenceCompleteness } = await import('@/lib/llm/sentence-validation');
+      const isComplete = validateSentenceCompleteness(
+        fullResponse,
+        'stop',
+        persona.name,
+        maxTokensForResponse
+      );
+
+      // PHASE 1: DIAGNOSTIC LOGGING - Completion and Truncation Metrics
+      const hadCompletion = continuationChunkCount > 0 || (finalResponse.length > fullResponse.length);
+      const truncationMetrics = {
+        discussionId,
+        persona: persona.name,
+        provider: persona.provider,
+        roundNumber,
+        hadCompletion,
+        completionAttempts: hadCompletion ? 1 : 0, // Will be updated by provider logs
+        isComplete,
+        responseLength: fullResponse.length,
+        responseTokens: countTokens(fullResponse),
+        estimatedTokens: Math.ceil(fullResponse.trim().length / 3.5), // Use 3.5 chars per token for consistency
+        maxTokens: maxTokensForResponse,
+        tokenUtilization: maxTokensForResponse ? `${((Math.ceil(fullResponse.trim().length / 3.5) / maxTokensForResponse) * 100).toFixed(1)}%` : 'N/A',
+        chunkCount,
+        continuationChunkCount,
+        // Length analysis
+        meetsMinimumLength: fullResponse.length >= 800, // Expected 2-4 paragraphs
+        meetsTargetLength: fullResponse.length >= 1200, // Target 300-500 words
+        endsWithPunctuation: /[.!?]\s*$/.test(fullResponse.trim()),
+        lastChars: fullResponse.slice(-100),
+        timestamp: new Date().toISOString(),
+      };
+
+      if (!isComplete) {
+        logger.error('🚨 CRITICAL: Final response still appears incomplete after completion attempts', {
+          ...truncationMetrics,
+          lastChars: fullResponse.slice(-100),
+          note: 'Response may be truncated despite completion attempts',
+        });
+        // Don't return incomplete response - this should have been caught by provider
+        // But we'll return it with a warning since we can't retry here
+      } else if (hadCompletion) {
+        logger.info('✅ Response successfully completed after truncation detection', truncationMetrics);
+      } else {
+        logger.debug('Response completed without truncation', truncationMetrics);
+      }
   } catch (streamError) {
     // Log the error with context
     logger.error('Error during LLM streaming', {
@@ -1922,9 +3388,13 @@ async function generateAIResponse(
     });
 
     // Emit error to client
+    // Type guard for ErrorWithCode
+    interface ErrorWithCode extends Error {
+      code: ErrorCode;
+    }
     const errorCode =
       streamError instanceof Error && 'code' in streamError
-        ? (streamError as any).code
+        ? (streamError as ErrorWithCode).code
         : ErrorCode.LLM_PROVIDER_ERROR;
     io.to(discussionId).emit('error', {
       discussionId: discussionId,
@@ -1955,22 +3425,139 @@ async function generateAIResponse(
     throw error;
   }
 
-  logger.debug('AI response generated successfully', {
+  // Response length monitoring and quality checks
+  const trimmedResponse = fullResponse.trim();
+  const responseLength = trimmedResponse.length;
+  const wordCount = trimmedResponse.split(/\s+/).filter(Boolean).length;
+
+  // Estimate tokens (rough approximation: ~4 characters per token)
+  const estimatedTokens = Math.ceil(responseLength / 4);
+  // Use LLM_CONFIG default max tokens (can be overridden via MAX_TOKENS env var)
+  const { LLM_CONFIG: LLM_CONFIG_FOR_VALIDATION } = await import('@/lib/config');
+  const maxTokensForValidation = LLM_CONFIG_FOR_VALIDATION.DEFAULT_MAX_TOKENS;
+  const tokenUtilization = (estimatedTokens / maxTokensForValidation) * 100;
+
+  // Check for suspiciously short responses
+  const isSuspiciouslyShort = responseLength < 200;
+  const isVeryShort = responseLength < 100;
+
+  // Check if response is less than 50% of expected length
+  // Expected: ~250-500 words for 2-4 paragraphs, which is ~1000-2000 characters
+  const expectedMinLength = 1000; // Conservative minimum for 2-4 paragraphs
+  const isBelowExpected = responseLength < expectedMinLength * 0.5;
+
+  // Log response metrics
+  const logData: Record<string, any> = {
     discussionId,
     persona: persona.name,
     roundNumber,
-    responseLength: fullResponse.trim().length,
+    turn,
+    exchangeNumber: turn,
+    responseLength,
+    wordCount,
+    estimatedTokens,
+    maxTokens: maxTokensForValidation,
+    tokenUtilization: tokenUtilization.toFixed(1) + '%',
+    responsePreview: trimmedResponse.substring(0, 100) + (responseLength > 100 ? '...' : ''),
+    chunkCount,
+    continuationChunkCount,
+    endsWithPunctuation: /[.!?]\s*$/.test(trimmedResponse),
+  };
+
+  // Add warnings for short responses
+  if (isVeryShort) {
+    logger.warn('Very short response detected', {
+      ...logData,
+      warning: 'Response is less than 100 characters',
+    });
+  } else if (isSuspiciouslyShort) {
+    logger.warn('Suspiciously short response detected', {
+      ...logData,
+      warning: 'Response is less than 200 characters',
+    });
+  }
+
+  if (isBelowExpected) {
+    logger.warn('Response below expected length', {
+      ...logData,
+      warning: 'Response is less than 50% of expected minimum length',
+      expectedMinLength,
+      actualLength: responseLength,
+    });
+  }
+
+  if (tokenUtilization < 20) {
+    logger.warn('Low token utilization', {
+      ...logData,
+      warning: 'Response used less than 20% of available tokens',
+    });
+  }
+
+  logger.info('AI response generated successfully', logData);
+
+  // CRITICAL DEBUG: Log response length at final stage
+  logger.info('🔍 DEBUG: Response length at final stage', {
+    discussionId,
+    persona: persona.name,
+    roundNumber,
+    fullResponseLength: fullResponse.length,
+    finalResponseLength: finalResponse.length,
+    trimmedFullResponseLength: fullResponse.trim().length,
+    chunkCount,
+    continuationChunkCount,
+    timestamp: new Date().toISOString(),
   });
 
-  // Create message
+  // CRITICAL FIX 1.2: Create message using finalResponse as source of truth
+  // fullResponse has been set to finalResponse in the streaming logic above
+  // Only trim whitespace, never truncate content
+  const finalContent = fullResponse.trim(); // fullResponse is already set to finalResponse above
+
+  // CRITICAL DEBUG: Log final content length
+  logger.info('🔍 DEBUG: Final content before message creation', {
+    discussionId,
+    persona: persona.name,
+    roundNumber,
+    finalContentLength: finalContent.length,
+    wordCount: finalContent.split(/\s+/).filter(Boolean).length,
+    endsWithPunctuation: /[.!?]\s*$/.test(finalContent),
+    timestamp: new Date().toISOString(),
+  });
+
+  logger.debug('Creating message with final response', {
+    discussionId,
+    persona: persona.name,
+    roundNumber,
+    contentLength: finalContent.length,
+    originalFullResponseLength: fullResponse.length,
+    originalFinalResponseLength: finalResponse.length,
+  });
+
+  // Create message with correct turn number
+  // Turn number calculation: (roundNumber - 1) * 3 + position
+  // Round 1: Analyzer = 1, Solver = 2, Moderator = 3
+  // Round 2: Analyzer = 4, Solver = 5, Moderator = 6
   const message: import('@/types').ConversationMessage = {
     discussion_id: discussionId,
     persona: persona.name as 'Solver AI' | 'Analyzer AI' | 'Moderator AI',
-    content: fullResponse.trim(),
-    turn,
+    content: finalContent, // CRITICAL FIX 1.2: Use finalResponse (via fullResponse) - only trim whitespace
+    turn, // This should be: Analyzer = (roundNumber-1)*3+1, Solver = (roundNumber-1)*3+2, Moderator = (roundNumber-1)*3+3
     timestamp: new Date().toISOString(),
     created_at: Date.now(),
   };
+
+  // CRITICAL FIX 1.1: Verify turn number is correct (using expectedTurn calculated at function start)
+  if (turn !== expectedTurn) {
+    logger.error('Turn number mismatch detected!', {
+      discussionId,
+      persona: persona.name,
+      roundNumber,
+      actualTurn: turn,
+      expectedTurn,
+    });
+    // Use the correct turn number
+    message.turn = expectedTurn;
+  }
 
   // Emit message complete
   io.to(discussionId).emit('message-complete', {

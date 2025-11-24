@@ -343,7 +343,7 @@ test.describe('AI Dialogue Platform - Feature Tests', () => {
     expect(hasStarted).toBeTruthy();
   });
 
-  test('Test 10: Generate Summary', async ({ page }) => {
+  test.skip('Test 10: Generate Summary - REMOVED', async ({ page }) => {
     await page.goto('/');
     await page.waitForLoadState('networkidle');
     await waitForConnection(page);

@@ -5,7 +5,7 @@ import { Toaster } from 'react-hot-toast';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'AI Dialogue Platform',
+  title: 'br.AI.ns',
   description: 'Three AI minds collaborate to solve problems and analyze topics through dialogue',
 };
 

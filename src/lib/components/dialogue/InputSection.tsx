@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useMemo, useEffect } from 'react';
-import { Upload, X, AlertCircle } from 'lucide-react';
+import { File, Image, AlertCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Button } from '@/lib/components/ui/Button';
 import { LoadingSpinner } from '@/lib/components/ui/LoadingSpinner';
@@ -38,6 +38,7 @@ export function InputSection({
   const [encodingProgress, setEncodingProgress] = useState<EncodingProgress | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const workerRef = useRef<Worker | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
     // Calculate if button should be disabled - use useMemo to ensure proper reactivity
   const isButtonDisabled = useMemo(() => {
@@ -73,6 +74,17 @@ export function InputSection({
       // Don't auto-clear, let user see the error until they try again
     }
   }, [topic, localError]);
+
+  // Auto-resize textarea based on content
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      const scrollHeight = textareaRef.current.scrollHeight;
+      const minHeight = 56; // ~3.5rem (56px) for slim initial height
+      const maxHeight = 300; // Max height before scrolling
+      textareaRef.current.style.height = `${Math.min(Math.max(scrollHeight, minHeight), maxHeight)}px`;
+    }
+  }, [topic]);
 
   // Cleanup worker on unmount
   useEffect(() => {
@@ -316,104 +328,136 @@ export function InputSection({
   };
 
   return (
-    <div className="bg-black rounded p-6 mb-6 border-2 border-green-500">
-      <div className="mb-4">
-        <label className="block text-white font-semibold mb-2">Topic or Problem</label>
-        <textarea
-          value={topic}
-          onChange={(e) => {
-            const newValue = e.target.value;
-            setTopic(newValue);
-            // Debug logging in development
-            if (process.env.NODE_ENV === 'development') {
-              clientLogger.debug('InputSection topic changed via onChange', {
-                newValue,
-                length: newValue.length,
-              });
-            }
-          }}
-          onInput={(e) => {
-            // Fallback handler for cases where onChange might not fire (e.g., browser automation)
-            const newValue = (e.target as HTMLTextAreaElement).value;
-            if (newValue !== topic) {
+    <div className="bg-transparent rounded px-6 pt-6 pb-0 mb-0">
+      <div className="mb-2">
+        <div className="relative">
+          <textarea
+            ref={textareaRef}
+            value={topic}
+            onChange={(e) => {
+              const newValue = e.target.value;
               setTopic(newValue);
               // Debug logging in development
               if (process.env.NODE_ENV === 'development') {
-                clientLogger.debug('InputSection topic changed via onInput', {
+                clientLogger.debug('InputSection topic changed via onChange', {
                   newValue,
                   length: newValue.length,
-                  oldTopic: topic,
                 });
               }
-            }
-          }}
-          placeholder="Enter a problem to solve, question to analyze, or situation to explore..."
-          className="w-full p-4 rounded bg-black border-2 border-green-500 text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500 min-h-[100px] resize-none"
-          disabled={isProcessing}
-        />
-      </div>
-
-      <div className="mb-4">
-        <label className="block text-white font-semibold mb-2">Attach Files (Optional)</label>
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          onChange={handleFileUpload}
-          className="hidden"
-          accept="image/*,.pdf"
-          disabled={isProcessing}
-        />
-        <Button
-          variant="secondary"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={isProcessing}
-        >
-          <Upload className="w-4 h-4 inline mr-2" />
-          Upload Images or PDFs
-        </Button>
-
+            }}
+            onInput={(e) => {
+              // Fallback handler for cases where onChange might not fire (e.g., browser automation)
+              const newValue = (e.target as HTMLTextAreaElement).value;
+              if (newValue !== topic) {
+                setTopic(newValue);
+                // Debug logging in development
+                if (process.env.NODE_ENV === 'development') {
+                  clientLogger.debug('InputSection topic changed via onInput', {
+                    newValue,
+                    length: newValue.length,
+                    oldTopic: topic,
+                  });
+                }
+              }
+            }}
+            placeholder="Enter a problem to solve, question to analyze, or situation to explore..."
+            className="w-full p-4 pr-20 rounded-lg bg-gray-800/50 border border-gray-600/50 text-white placeholder-gray-400 focus:outline-none focus:border-gray-500 focus:bg-gray-800/70 transition-all resize-none overflow-y-auto"
+            style={{ minHeight: '56px', maxHeight: '300px' }}
+            disabled={isProcessing}
+          />
+          <div className="absolute bottom-3 right-3 flex items-center gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              onChange={handleFileUpload}
+              className="hidden"
+              accept="image/*,.pdf"
+              disabled={isProcessing}
+            />
+            <button
+              type="button"
+              onClick={() => {
+                // Create a PDF-only input element
+                const pdfInput = document.createElement('input');
+                pdfInput.type = 'file';
+                pdfInput.accept = '.pdf';
+                pdfInput.multiple = true;
+                pdfInput.onchange = (e) => {
+                  const target = e.target as HTMLInputElement;
+                  if (target.files && target.files.length > 0) {
+                    const fileList = new DataTransfer();
+                    Array.from(target.files).forEach((file) => fileList.items.add(file));
+                    if (fileInputRef.current) {
+                      fileInputRef.current.files = fileList.files;
+                      fileInputRef.current.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                  }
+                };
+                pdfInput.click();
+              }}
+              disabled={isProcessing}
+              className="text-green-500 hover:text-green-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Upload PDFs"
+            >
+              <File className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                // Create an image-only input element
+                const imageInput = document.createElement('input');
+                imageInput.type = 'file';
+                imageInput.accept = 'image/*';
+                imageInput.multiple = true;
+                imageInput.onchange = (e) => {
+                  const target = e.target as HTMLInputElement;
+                  if (target.files && target.files.length > 0) {
+                    const fileList = new DataTransfer();
+                    Array.from(target.files).forEach((file) => fileList.items.add(file));
+                    if (fileInputRef.current) {
+                      fileInputRef.current.files = fileList.files;
+                      fileInputRef.current.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                  }
+                };
+                imageInput.click();
+              }}
+              disabled={isProcessing}
+              className="text-green-500 hover:text-green-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Upload images"
+            >
+              <Image className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+        <div className="flex justify-end mt-1">
+          <Button
+            onClick={handleStart}
+            disabled={isButtonDisabled}
+            className="px-4 py-2 text-sm"
+          >
+            {isEncoding ? (
+              <>
+                <LoadingSpinner className="w-4 h-4" />
+                Encoding...
+              </>
+            ) : isProcessing ? (
+              <>
+                <LoadingSpinner className="w-4 h-4" />
+                Processing...
+              </>
+            ) : (
+              'Start Discussion'
+            )}
+          </Button>
+        </div>
         {files.length > 0 && (
-          <div className="mt-3 space-y-2">
-            {files.map((file, index) => (
-              <div key={index} className="flex items-center justify-between bg-black p-2 rounded border-2 border-green-500">
-                <span className="text-white text-sm truncate flex-1">
-                  {sanitizeFilename(file.name)}
-                </span>
-                <button
-                  onClick={() => removeFile(index)}
-                  className="text-green-500 hover:text-green-400 text-sm ml-2"
-                  disabled={isProcessing}
-                  type="button"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            ))}
+          <div className="mt-2 text-xs text-green-500">
+            {files.length} file{files.length !== 1 ? 's' : ''} attached
           </div>
         )}
       </div>
-
-      {/* File Encoding Progress */}
-      {isEncoding && encodingProgress && (
-        <div className="mb-4 p-3 bg-black border-2 border-green-500 rounded">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-white text-sm">
-              Encoding file {encodingProgress.fileIndex + 1} of {encodingProgress.totalFiles}:{' '}
-              {encodingProgress.fileName}
-            </span>
-            <span className="text-green-500 text-sm font-semibold">
-              {encodingProgress.progress}%
-            </span>
-          </div>
-          <div className="w-full bg-black rounded-full h-2 overflow-hidden border border-green-500">
-            <div
-              className="bg-green-500 h-full rounded-full transition-all duration-300"
-              style={{ width: `${encodingProgress.progress}%` }}
-            />
-          </div>
-        </div>
-      )}
 
       {error && (
         <div className="mb-4 p-3 bg-black border-2 border-green-500 rounded flex items-start gap-2">
@@ -446,25 +490,6 @@ export function InputSection({
         </div>
       )}
 
-      <Button
-        onClick={handleStart}
-        disabled={isButtonDisabled}
-        className="w-full py-3 flex items-center justify-center gap-2"
-      >
-        {isEncoding ? (
-          <>
-            <LoadingSpinner />
-            Encoding Files...
-          </>
-        ) : isProcessing ? (
-          <>
-            <LoadingSpinner />
-            AIs in Conversation...
-          </>
-        ) : (
-          <>Start AI Dialogue</>
-        )}
-      </Button>
     </div>
   );
 }

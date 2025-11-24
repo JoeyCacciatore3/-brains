@@ -88,17 +88,17 @@ export function formatDiscussionMarkdown(data: DiscussionData): string {
       lines.push(`*${new Date(round.timestamp).toLocaleString()}*`);
       lines.push('');
 
-      // Solver AI response
-      lines.push(`#### ${round.solverResponse.persona}`);
-      lines.push(round.solverResponse.content);
-      lines.push('');
-
-      // Analyzer AI response
+      // Analyzer AI response (first in execution order)
       lines.push(`#### ${round.analyzerResponse.persona}`);
       lines.push(round.analyzerResponse.content);
       lines.push('');
 
-      // Moderator AI response
+      // Solver AI response (second in execution order)
+      lines.push(`#### ${round.solverResponse.persona}`);
+      lines.push(round.solverResponse.content);
+      lines.push('');
+
+      // Moderator AI response (third in execution order)
       lines.push(`#### ${round.moderatorResponse.persona}`);
       lines.push(round.moderatorResponse.content);
       lines.push('');

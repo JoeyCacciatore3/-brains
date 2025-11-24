@@ -3,6 +3,8 @@
  * All environment variable defaults and application constants
  */
 
+import { logger } from '@/lib/logger';
+
 /**
  * Rate limiting configuration
  */
@@ -47,10 +49,51 @@ export const FILE_CONFIG = {
 
 /**
  * LLM provider configuration
+ *
+ * MAX_TOKENS Configuration:
+ * - Default: 1000 tokens per response
+ * - Recommended range: 1000-2000 tokens for comprehensive responses
+ * - Minimum: 500 tokens (may cause truncation)
+ * - Maximum: Provider-dependent (typically 4096-8192 for most models)
+ * - Configuration: Set MAX_TOKENS environment variable to override default
+ *
+ * Provider-specific limits (approximate):
+ * - Groq: 8192 tokens (model-dependent)
+ * - Mistral: 8192 tokens (model-dependent)
+ * - OpenRouter: Varies by model (typically 4096-8192)
+ *
+ * Note: Lower values may cause truncation, requiring completion logic to finish responses.
+ * Higher values allow more comprehensive responses but increase token usage and cost.
  */
 export const LLM_CONFIG = {
   DEFAULT_TIMEOUT_MS: 60000, // 60 seconds
-  DEFAULT_MAX_TOKENS: 280, // Reduced by 30% for more concise responses
+  DEFAULT_MAX_TOKENS: (() => {
+    const envMaxTokens = process.env.MAX_TOKENS;
+    if (!envMaxTokens) {
+      return 2000; // Default max tokens per response (configurable via MAX_TOKENS env var). Increased from 1000 to 2000 for more comprehensive responses (300-500 words as per prompts).
+    }
+    const parsed = parseInt(envMaxTokens, 10);
+    if (isNaN(parsed) || parsed < 1) {
+      logger.warn('Invalid MAX_TOKENS value, using default', {
+        providedValue: envMaxTokens,
+        defaultValue: 2000,
+      });
+      return 2000; // Invalid value, use default
+    }
+    // Validate reasonable range (500-8192)
+    if (parsed < 500) {
+      logger.warn('MAX_TOKENS is very low, may cause frequent truncation', {
+        providedValue: parsed,
+        recommendedMinimum: 1500,
+      });
+    } else if (parsed > 8192) {
+      logger.warn('MAX_TOKENS exceeds typical provider limits, may cause errors', {
+        providedValue: parsed,
+        recommendedMaximum: 8192,
+      });
+    }
+    return parsed;
+  })(),
   SUMMARY_MAX_TOKENS: 200, // Reduced by 50% for summaries
   DEFAULT_TEMPERATURE: 0.7,
 } as const;

@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { createDatabase } from './schema';
-import { logger } from '../logger';
+import { logger } from '@/lib/logger';
 import path from 'path';
 import fs from 'fs';
 

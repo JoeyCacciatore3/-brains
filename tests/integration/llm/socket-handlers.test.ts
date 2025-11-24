@@ -54,7 +54,7 @@ vi.mock('@/lib/discussions/file-manager', () => ({
   })),
 }));
 
-vi.mock('@/lib/conversation-context', () => ({
+vi.mock('@/lib/discussion-context', () => ({
   loadDiscussionContext: vi.fn(() => ({
     messages: [],
     rounds: [],
@@ -199,7 +199,7 @@ describe('Socket Handlers LLM Integration', () => {
 
   describe('Context Building', () => {
     it('should build context with rounds and summaries', async () => {
-      const { formatLLMPrompt } = await import('@/lib/conversation-context');
+      const { formatLLMPrompt } = await import('@/lib/discussion-context');
 
       const rounds = [createMockDiscussionRound(1)];
       const summary = {
@@ -227,7 +227,7 @@ describe('Socket Handlers LLM Integration', () => {
     });
 
     it('should include user answers in context', async () => {
-      const { formatLLMPrompt } = await import('@/lib/conversation-context');
+      const { formatLLMPrompt } = await import('@/lib/discussion-context');
 
       const userAnswers = {
         'question-1': ['answer-1', 'answer-2'],

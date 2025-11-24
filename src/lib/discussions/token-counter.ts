@@ -6,8 +6,16 @@
 
 import { logger } from '@/lib/logger';
 
+/**
+ * Interface for tokenizer objects from tiktoken
+ * Matches the structure returned by tiktoken.encoding_for_model()
+ */
+interface Tokenizer {
+  encode: (text: string) => Uint32Array;
+}
+
 // Cache tokenizers by model name
-const tokenizerCache = new Map<string, any>();
+const tokenizerCache = new Map<string, Tokenizer>();
 
 // Flag to track if tiktoken is available
 let tiktokenAvailable: boolean | null = null;
@@ -162,10 +170,16 @@ export async function countTokensAsync(text: string, model?: string): Promise<nu
 
 /**
  * Estimate token count from text (fallback method)
- * Uses ~4 characters per token for English text
+ * Uses improved estimation based on actual tokenization patterns
+ *
+ * ENHANCED: More accurate estimation by accounting for:
+ * - Word boundaries (tokens often split at word boundaries)
+ * - Whitespace (not counted in tokens but affects splitting)
+ * - Punctuation (often separate tokens)
+ * - Common patterns (contractions, abbreviations, etc.)
  *
  * @param text - Text to estimate tokens for
- * @returns Estimated token count
+ * @returns Estimated token count (more accurate than simple 4 chars/token)
  */
 export function estimateTokenCount(text: string): number {
   if (!text || text.length === 0) {
@@ -177,9 +191,51 @@ export function estimateTokenCount(text: string): number {
     return 0;
   }
 
-  // Rough estimation: 4 characters per token for English text
-  // This is conservative and works well for most English content
-  return Math.ceil(trimmed.length / 4);
+  // ENHANCED: More accurate estimation
+  // Base estimation: account for word boundaries and whitespace
+  // Typical tokenization splits on whitespace and punctuation
+  // Average English word is ~4.5-5 chars, but tokens can be shorter (3-4 chars) due to subword splitting
+
+  // Count words (split on whitespace)
+  const words = trimmed.split(/\s+/).filter(w => w.length > 0);
+  const wordCount = words.length;
+
+  // Count characters excluding whitespace
+  const charCountWithoutWhitespace = trimmed.replace(/\s+/g, '').length;
+
+  // ENHANCED: Account for punctuation as separate tokens
+  // Punctuation marks are often separate tokens
+  const punctuationMatches = trimmed.match(/[.,!?;:()[\]{}'"]/g);
+  const punctuationCount = punctuationMatches ? punctuationMatches.length : 0;
+
+  // ENHANCED: Estimate tokens based on:
+  // 1. Characters without whitespace (base estimate: ~3.5 chars per token due to subword tokenization)
+  // 2. Punctuation marks (often separate tokens, ~1 per punctuation)
+  // 3. Word boundaries (can affect tokenization but less significant)
+
+  // Conservative estimate: ~3.5-4 chars per token for word content
+  // This is more accurate than 4 chars/token for typical English content
+  const baseTokens = Math.ceil(charCountWithoutWhitespace / 3.75); // Slightly more aggressive than 4
+
+  // Add punctuation tokens (most punctuation is separate tokens)
+  const punctuationTokens = Math.ceil(punctuationCount * 0.8); // Most punctuation is separate tokens
+
+  // ENHANCED: Account for subword tokenization
+  // Long words (>8 chars) are often split into multiple tokens
+  const longWords = words.filter(w => w.length > 8).length;
+  const additionalSubwordTokens = Math.ceil(longWords * 0.3); // ~30% of long words are split
+
+  const totalEstimatedTokens = baseTokens + punctuationTokens + additionalSubwordTokens;
+
+  // Fallback to simple estimation if calculation seems off
+  const simpleEstimate = Math.ceil(trimmed.length / 4);
+
+  // Use the more accurate estimate, but don't go below simple estimate by more than 20%
+  // This prevents underestimation which could cause context overflow
+  const minEstimate = Math.floor(simpleEstimate * 0.8);
+  const finalEstimate = Math.max(totalEstimatedTokens, minEstimate);
+
+  return finalEstimate;
 }
 
 /**

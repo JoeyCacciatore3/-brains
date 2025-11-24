@@ -107,12 +107,23 @@ app.prepare().catch((error) => {
       // Enhanced error handling for webpack chunk errors
       try {
         await handle(req, res, parsedUrl);
-      } catch (handleError: any) {
+      } catch (handleError: unknown) {
+        // Type guard for error objects
+        const isError = (error: unknown): error is Error & { code?: string } => {
+          return (
+            typeof error === 'object' &&
+            error !== null &&
+            'message' in error &&
+            typeof (error as { message: unknown }).message === 'string'
+          );
+        };
+
         // Check if this is a webpack chunk/module error
         if (
-          handleError?.message?.includes('Cannot find module') ||
-          handleError?.message?.includes('Module not found') ||
-          handleError?.code === 'MODULE_NOT_FOUND'
+          isError(handleError) &&
+          (handleError.message.includes('Cannot find module') ||
+            handleError.message.includes('Module not found') ||
+            handleError.code === 'MODULE_NOT_FOUND')
         ) {
           logger.error('Webpack chunk/module error detected', {
             url: req.url,
@@ -138,7 +149,7 @@ app.prepare().catch((error) => {
                 <body style="font-family: system-ui; padding: 2rem; max-width: 800px; margin: 0 auto;">
                   <h1>Build Error Detected</h1>
                   <p>The application build appears to be corrupted or incomplete.</p>
-                  <p><strong>Error:</strong> ${handleError.message}</p>
+                  <p><strong>Error:</strong> ${isError(handleError) ? handleError.message : String(handleError)}</p>
                   <h2>How to Fix:</h2>
                   <ol>
                     <li>Stop the development server (Ctrl+C)</li>
@@ -154,11 +165,13 @@ app.prepare().catch((error) => {
         }
 
         // For other errors, log and return generic error
+        const errorMessage = isError(handleError) ? handleError.message : String(handleError);
+        const errorStack = isError(handleError) ? handleError.stack : undefined;
         logger.error('Error occurred handling request', {
           url: req.url,
           error: handleError,
-          message: handleError?.message,
-          stack: handleError?.stack,
+          message: errorMessage,
+          stack: errorStack,
         });
 
         if (!res.headersSent) {

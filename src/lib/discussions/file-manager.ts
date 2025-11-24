@@ -13,6 +13,14 @@ import { countTokens } from './token-counter';
 import { withLock } from './file-lock';
 import { backupDiscussion } from './backup-manager';
 import { BACKUP_CONFIG } from '@/lib/config';
+import {
+  sortRoundsByRoundNumber,
+  validateRoundNumberSequence,
+  validateRoundsSorted,
+  validateNewRoundNumber,
+  filterIncompleteRounds,
+  calculateTurnNumber,
+} from './round-utils';
 
 const DISCUSSIONS_DIR =
   process.env.DISCUSSIONS_DIR || path.join(process.cwd(), 'data', 'discussions');
@@ -276,12 +284,20 @@ function getDiscussionPaths(userId: string, discussionId: string): { json: strin
 
 /**
  * Create a new discussion file
+ *
+ * Discussion ID Uniqueness:
+ * - Uses randomUUID() which is cryptographically secure and generates unique IDs
+ * - Database constraint: PRIMARY KEY on id (enforces uniqueness at DB level)
+ * - File system structure: discussions stored per user directory (userId/discussionId.json)
+ * - User ownership verified in readDiscussion() - ensures user-discussion relationship
  */
 export async function createDiscussion(
   userId: string,
   topic: string,
   discussionId?: string
 ): Promise<{ id: string; jsonPath: string; mdPath: string }> {
+  // Generate unique discussion ID using cryptographically secure randomUUID
+  // Database PRIMARY KEY constraint ensures uniqueness at database level
   const id = discussionId || randomUUID();
   const now = Date.now();
 
@@ -357,6 +373,33 @@ export async function readDiscussion(
     // Verify user ownership
     if (data.userId !== userId) {
       throw new Error('Discussion does not belong to user');
+    }
+
+    // CRITICAL: Sort rounds by roundNumber after reading to ensure consistent order
+    // JSON.parse should preserve array order, but we explicitly sort to be safe
+    if (data.rounds && data.rounds.length > 0) {
+      // Validate rounds are sorted (log warning if not, but don't fail)
+      if (!validateRoundsSorted(data.rounds)) {
+        logger.warn('Rounds not sorted by roundNumber after reading, sorting now', {
+          discussionId,
+          userId,
+          roundsCount: data.rounds.length,
+        });
+      }
+
+      // Sort rounds explicitly
+      data.rounds = sortRoundsByRoundNumber(data.rounds);
+
+      // Validate round number sequence integrity
+      const sequenceValidation = validateRoundNumberSequence(data.rounds);
+      if (!sequenceValidation.isValid) {
+        logger.error('Round number sequence validation failed', {
+          discussionId,
+          userId,
+          errors: sequenceValidation.errors,
+        });
+        // Don't throw - log error but continue (may be recoverable)
+      }
     }
 
     return data;
@@ -468,13 +511,111 @@ export async function addRoundToDiscussion(
       data.questions = [];
     }
 
+    // CRITICAL: Validate round number matches expected value before adding
+    const roundValidation = validateNewRoundNumber(data.rounds, round.roundNumber);
+    if (!roundValidation.isValid) {
+      logger.error('Invalid round number when adding round', {
+        discussionId,
+        userId,
+        roundNumber: round.roundNumber,
+        expectedRoundNumber: data.rounds.length + 1,
+        error: roundValidation.error,
+      });
+      throw new Error(roundValidation.error || 'Invalid round number');
+    }
+
+    // CRITICAL: Validate turn numbers match expected values before saving
+    // This is a safety check to ensure data integrity even if corrupted data somehow
+    // gets through the handlers validation
+    const expectedAnalyzerTurn = calculateTurnNumber(round.roundNumber, 'Analyzer AI');
+    const expectedSolverTurn = calculateTurnNumber(round.roundNumber, 'Solver AI');
+    const expectedModeratorTurn = calculateTurnNumber(round.roundNumber, 'Moderator AI');
+
+    if (round.analyzerResponse.turn !== expectedAnalyzerTurn) {
+      logger.error('🚨 CRITICAL: Analyzer turn number mismatch in addRoundToDiscussion', {
+        discussionId,
+        userId,
+        roundNumber: round.roundNumber,
+        expectedTurn: expectedAnalyzerTurn,
+        actualTurn: round.analyzerResponse.turn,
+      });
+      throw new Error(`Analyzer turn number mismatch: expected ${expectedAnalyzerTurn}, got ${round.analyzerResponse.turn}`);
+    }
+
+    if (round.solverResponse.turn !== expectedSolverTurn) {
+      logger.error('🚨 CRITICAL: Solver turn number mismatch in addRoundToDiscussion', {
+        discussionId,
+        userId,
+        roundNumber: round.roundNumber,
+        expectedTurn: expectedSolverTurn,
+        actualTurn: round.solverResponse.turn,
+      });
+      throw new Error(`Solver turn number mismatch: expected ${expectedSolverTurn}, got ${round.solverResponse.turn}`);
+    }
+
+    if (round.moderatorResponse.turn !== expectedModeratorTurn) {
+      logger.error('🚨 CRITICAL: Moderator turn number mismatch in addRoundToDiscussion', {
+        discussionId,
+        userId,
+        roundNumber: round.roundNumber,
+        expectedTurn: expectedModeratorTurn,
+        actualTurn: round.moderatorResponse.turn,
+      });
+      throw new Error(`Moderator turn number mismatch: expected ${expectedModeratorTurn}, got ${round.moderatorResponse.turn}`);
+    }
+
+    // Validate personas match expected values
+    if (round.analyzerResponse.persona !== 'Analyzer AI') {
+      logger.error('🚨 CRITICAL: Analyzer persona mismatch in addRoundToDiscussion', {
+        discussionId,
+        userId,
+        roundNumber: round.roundNumber,
+        expectedPersona: 'Analyzer AI',
+        actualPersona: round.analyzerResponse.persona,
+      });
+      throw new Error(`Analyzer persona mismatch: expected 'Analyzer AI', got '${round.analyzerResponse.persona}'`);
+    }
+
+    if (round.solverResponse.persona !== 'Solver AI') {
+      logger.error('🚨 CRITICAL: Solver persona mismatch in addRoundToDiscussion', {
+        discussionId,
+        userId,
+        roundNumber: round.roundNumber,
+        expectedPersona: 'Solver AI',
+        actualPersona: round.solverResponse.persona,
+      });
+      throw new Error(`Solver persona mismatch: expected 'Solver AI', got '${round.solverResponse.persona}'`);
+    }
+
+    if (round.moderatorResponse.persona !== 'Moderator AI') {
+      logger.error('🚨 CRITICAL: Moderator persona mismatch in addRoundToDiscussion', {
+        discussionId,
+        userId,
+        roundNumber: round.roundNumber,
+        expectedPersona: 'Moderator AI',
+        actualPersona: round.moderatorResponse.persona,
+      });
+      throw new Error(`Moderator persona mismatch: expected 'Moderator AI', got '${round.moderatorResponse.persona}'`);
+    }
+
+    logger.debug('Round validation passed before saving', {
+      discussionId,
+      userId,
+      roundNumber: round.roundNumber,
+      analyzerTurn: round.analyzerResponse.turn,
+      solverTurn: round.solverResponse.turn,
+      moderatorTurn: round.moderatorResponse.turn,
+    });
+
     data.rounds.push(round);
+    // CRITICAL: Sort rounds after adding to maintain order
+    data.rounds = sortRoundsByRoundNumber(data.rounds);
     data.currentRound = round.roundNumber;
     data.updatedAt = Date.now();
 
     // Note: We no longer populate the messages array from rounds.
     // Rounds are the source of truth. Messages array is generated on-demand
-    // for backward compatibility in conversation-context.ts if needed.
+    // for backward compatibility in discussion-context.ts if needed.
 
     const paths = getDiscussionPaths(userId, discussionId);
 
@@ -708,6 +849,49 @@ export async function getUserDiscussionIds(userId: string): Promise<string[]> {
 /**
  * Get discussion file paths (relative to discussions directory)
  */
+/**
+ * Delete discussion files (JSON and Markdown)
+ * Uses file locking to prevent race conditions
+ * @param userId - User ID
+ * @param discussionId - Discussion ID
+ * @throws Error if files cannot be deleted
+ */
+export async function deleteDiscussionFiles(userId: string, discussionId: string): Promise<void> {
+  const paths = getDiscussionPaths(userId, discussionId);
+
+  return withLock(discussionId, userId, async () => {
+    try {
+      // Delete both files, ignore errors if files don't exist
+      await Promise.allSettled([
+        fs.unlink(paths.json).catch((error) => {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+            throw error;
+          }
+        }),
+        fs.unlink(paths.md).catch((error) => {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+            throw error;
+          }
+        }),
+      ]);
+
+      logger.info('Discussion files deleted', {
+        discussionId,
+        userId,
+        jsonPath: paths.json,
+        mdPath: paths.md,
+      });
+    } catch (error) {
+      logger.error('Error deleting discussion files', {
+        discussionId,
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  });
+}
+
 export function getDiscussionFilePaths(
   userId: string,
   discussionId: string
@@ -716,4 +900,165 @@ export function getDiscussionFilePaths(
     json: path.join(userId, `${discussionId}.json`),
     md: path.join(userId, `${discussionId}.md`),
   };
+}
+
+/**
+ * Clean up incomplete rounds from discussion storage
+ * Removes rounds that have some responses but not all three
+ * This prevents incomplete rounds from contaminating context
+ *
+ * @param discussionId - Discussion ID
+ * @param userId - User ID for ownership verification
+ * @returns Number of incomplete rounds removed
+ */
+export async function cleanupIncompleteRounds(
+  discussionId: string,
+  userId: string
+): Promise<number> {
+  return withLock(discussionId, userId, async () => {
+    const data = await readDiscussion(discussionId, userId);
+
+    if (!data.rounds || data.rounds.length === 0) {
+      return 0; // No rounds to clean up
+    }
+
+    // Find incomplete rounds
+    const incompleteRounds = filterIncompleteRounds(data.rounds);
+    if (incompleteRounds.length === 0) {
+      return 0; // No incomplete rounds to remove
+    }
+
+    // Log incomplete rounds before removal
+    logger.info('Cleaning up incomplete rounds', {
+      discussionId,
+      userId,
+      totalRounds: data.rounds.length,
+      incompleteRoundsCount: incompleteRounds.length,
+      incompleteRounds: incompleteRounds.map((r) => ({
+        roundNumber: r.roundNumber,
+        hasAnalyzer: !!r.analyzerResponse?.content?.trim(),
+        hasSolver: !!r.solverResponse?.content?.trim(),
+        hasModerator: !!r.moderatorResponse?.content?.trim(),
+      })),
+    });
+
+    // Remove incomplete rounds
+    const incompleteRoundNumbers = new Set(incompleteRounds.map((r) => r.roundNumber));
+    const cleanedRounds = data.rounds.filter((r) => !incompleteRoundNumbers.has(r.roundNumber));
+
+    // Update data
+    data.rounds = cleanedRounds;
+    data.updatedAt = Date.now();
+
+    // Recalculate currentRound to be the highest complete round number
+    if (cleanedRounds.length > 0) {
+      const sortedRounds = sortRoundsByRoundNumber(cleanedRounds);
+      data.currentRound = sortedRounds[sortedRounds.length - 1].roundNumber;
+    } else {
+      data.currentRound = 0;
+    }
+
+    const paths = getDiscussionPaths(userId, discussionId);
+
+    try {
+      const jsonContent = formatDiscussionJSON(data);
+      const mdContent = formatDiscussionMarkdown(data);
+
+      // Use atomic write with retry logic
+      await retryFileOperation(
+        () => writeDiscussionFilesAtomically(paths.json, paths.md, jsonContent, mdContent),
+        { discussionId, userId, operation: 'cleanupIncompleteRounds' }
+      );
+
+      logger.info('Incomplete rounds cleaned up successfully', {
+        discussionId,
+        userId,
+        removedCount: incompleteRounds.length,
+        remainingRounds: cleanedRounds.length,
+        newCurrentRound: data.currentRound,
+      });
+
+      return incompleteRounds.length;
+    } catch (error) {
+      logger.error('Failed to clean up incomplete rounds', { error, discussionId, userId });
+      throw error;
+    }
+  });
+}
+
+/**
+ * Delete all discussion files for a user
+ * @param userId - User ID whose discussion files should be deleted
+ * @returns Number of files deleted
+ */
+export async function deleteAllUserDiscussionFiles(userId: string): Promise<number> {
+  const userDir = path.join(DISCUSSIONS_DIR, userId);
+  let deletedCount = 0;
+
+  try {
+    // Check if user directory exists
+    try {
+      await fs.access(userDir);
+    } catch {
+      // Directory doesn't exist, nothing to delete
+      logger.info('User discussion directory does not exist', { userId, userDir });
+      return 0;
+    }
+
+    // Read all files in user directory
+    const files = await fs.readdir(userDir);
+
+    // Delete all .json and .md files
+    const deletePromises = files
+      .filter((file) => file.endsWith('.json') || file.endsWith('.md'))
+      .map(async (file) => {
+        const filePath = path.join(userDir, file);
+        try {
+          await fs.unlink(filePath);
+          deletedCount++;
+          logger.debug('Deleted discussion file', { userId, file, filePath });
+        } catch (error) {
+          logger.error('Error deleting discussion file', {
+            userId,
+            file,
+            filePath,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          // Continue with other files even if one fails
+        }
+      });
+
+    await Promise.allSettled(deletePromises);
+
+    // Try to remove the user directory if it's empty
+    try {
+      const remainingFiles = await fs.readdir(userDir);
+      if (remainingFiles.length === 0) {
+        await fs.rmdir(userDir);
+        logger.debug('Removed empty user discussion directory', { userId, userDir });
+      }
+    } catch (error) {
+      // Ignore errors removing directory (might not be empty or might have subdirectories)
+      logger.debug('Could not remove user discussion directory', {
+        userId,
+        userDir,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    logger.info('All discussion files deleted for user', {
+      userId,
+      deletedCount,
+      userDir,
+    });
+
+    return deletedCount;
+  } catch (error) {
+    logger.error('Error deleting all user discussion files', {
+      userId,
+      userDir,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
 }

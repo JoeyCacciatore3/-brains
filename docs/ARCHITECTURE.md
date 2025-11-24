@@ -211,10 +211,9 @@ The AI Dialogue Platform is a real-time web application where three AI personas 
 │   │   ├── db/                    # Database layer
 │   │   │   ├── index.ts           # Database connection management
 │   │   │   ├── schema.ts          # Database schema and initialization
-│   │   │   ├── conversations.ts   # Conversation CRUD operations (legacy)
-│   │   │   ├── discussions.ts    # Discussion CRUD operations
-│   │   │   ├── users.ts          # User CRUD operations
-│   │   │   └── redis.ts          # Redis client
+│   │   │   ├── discussions.ts     # Discussion CRUD operations (primary)
+│   │   │   ├── users.ts           # User CRUD operations
+│   │   │   └── redis.ts           # Redis client
 │   │   │
 │   │   ├── discussions/           # Discussion file management
 │   │   │   ├── file-manager.ts   # File-based storage operations
@@ -227,7 +226,7 @@ The AI Dialogue Platform is a real-time web application where three AI personas 
 │   │   ├── client-logger.ts       # Client-side logging
 │   │   ├── env-validation.ts      # Environment variable validation
 │   │   ├── errors.ts              # Standardized error codes and messages
-│   │   ├── conversation-context.ts # LLM prompt formatting
+│   │   ├── discussion-context.ts # LLM prompt formatting
 │   │   ├── pdf-extraction.ts      # PDF text extraction
 │   │   ├── type-guards.ts         # Type guard functions
 │   │   ├── config.ts              # Centralized configuration
@@ -443,12 +442,12 @@ httpServer.listen(port);
 
 - `socket`: Socket instance
 - `isConnected`: Connection status
-- `conversationId`: Current conversation ID
+- `discussionId`: Current discussion ID
 - `currentMessage`: Currently streaming message
 - `messages`: Completed messages array
 - `needsUserInput`: Whether user input is needed
 - `userInputQuestion`: Question text for user
-- `isResolved`: Whether conversation is resolved
+- `isResolved`: Whether discussion is resolved
 - `error`: Error message if any
 
 ---
@@ -500,7 +499,7 @@ httpServer.listen(port);
 - `message-start`: AI starts generating
 - `message-chunk`: Streaming content chunks
 - `message-complete`: Message finished
-- `round-complete`: Round completed (all three AIs responded: Solver → Analyzer → Moderator)
+- `round-complete`: Round completed (all three AIs responded: Analyzer → Solver → Moderator)
 - `questions-generated`: Questions generated for round
 - `summary-created`: Summary created for rounds
 - `conversation-resolved`: Resolution reached
@@ -516,15 +515,15 @@ httpServer.listen(port);
 
 ```typescript
 {
-  conversationId: string; // UUID
+  discussionId: string; // UUID
   input: string; // User's response
 }
 ```
 
 **Validation:**
 
-- `conversationId`: Must be valid UUID format (Zod schema)
-- `conversationId`: Must exist in database
+- `discussionId`: Must be valid UUID format (Zod schema)
+- `discussionId`: Must exist in database
 - `input`: Non-empty string
 
 **Handler Flow:**
@@ -534,10 +533,10 @@ httpServer.listen(port);
 2. Check rate limit (Redis or in-memory)
 3. Emit error if rate limit exceeded, return
 4. Validate request data including UUID format
-5. Validate conversation exists
+5. Validate discussion exists
 6. Calculate correct turn number
 7. Save user message to database (in transaction)
-8. Update conversation (clear needs_user_input)
+8. Update discussion (clear needs_user_input)
 9. Continue dialogue processing
 ```
 
@@ -572,7 +571,7 @@ httpServer.listen(port);
 
 ```typescript
 {
-  conversationId: string;
+  discussionId: string;
   persona: string; // 'Solver AI' | 'Analyzer AI' | 'Moderator AI'
   turn: number; // Exchange number
 }
@@ -588,7 +587,7 @@ httpServer.listen(port);
 
 ```typescript
 {
-  conversationId: string;
+  discussionId: string;
   chunk: string; // Text chunk
 }
 ```
@@ -605,7 +604,7 @@ httpServer.listen(port);
 
 ```typescript
 {
-  conversationId: string;
+  discussionId: string;
   message: ConversationMessage; // Complete message object
 }
 ```
@@ -630,7 +629,7 @@ httpServer.listen(port);
 
 ```typescript
 {
-  conversationId: string;
+  discussionId: string;
 }
 ```
 
@@ -849,7 +848,7 @@ CREATE TABLE discussions (
   file_path_json TEXT NOT NULL,           -- Path to JSON discussion file
   file_path_md TEXT NOT NULL,             -- Path to Markdown discussion file
   token_count INTEGER NOT NULL DEFAULT 0, -- Current token count
-  token_limit INTEGER NOT NULL DEFAULT 4800, -- Token limit (60% of 8K context)
+  token_limit INTEGER NOT NULL DEFAULT 4000, -- Token limit (50% of 8K context with safety buffer)
   summary TEXT,                           -- Generated summary (if created)
   summary_created_at INTEGER,             -- Timestamp when summary was created
   created_at INTEGER NOT NULL,            -- Unix timestamp
@@ -899,7 +898,7 @@ interface Discussion {
 **Token Management:**
 
 - Token counting: Uses actual tokenization with tiktoken for OpenAI-compatible models, falls back to estimation for unsupported models
-- Token limit: Default 4800 (60% of 8K context window), configurable via `DISCUSSION_TOKEN_LIMIT`
+- Token limit: Default 4000 (50% of 8K context window with safety buffer), configurable via `DISCUSSION_TOKEN_LIMIT`
 - Automatic summarization: Triggered when token count reaches 80% of limit OR every 5 rounds OR 5+ rounds since last summary
 - File locking: Distributed locking (Redis + in-memory) prevents concurrent write race conditions
 - Data reconciliation: Periodic sync from files to database to detect and fix inconsistencies
@@ -959,13 +958,15 @@ interface ConversationMessage {
 
 ### CRUD Operations
 
-**Location:** `src/lib/db/conversations.ts`
+**Location:** `src/lib/db/discussions.ts`
+
+**Note:** The deprecated `conversations.ts` file has been removed. All operations now use `discussions.ts`.
 
 #### Create Operations
 
-##### `createConversation(topic: string): Conversation`
+##### `createDiscussion(userId: string, topic: string, filePathJson: string, filePathMd: string, discussionId?: string): Discussion`
 
-**Purpose:** Create a new conversation
+**Purpose:** Create a new discussion (metadata only - file content created separately)
 
 **Process:**
 
@@ -1012,14 +1013,14 @@ VALUES (?, ?, ?, ?, ?, ?)
 SELECT * FROM conversations WHERE id = ?
 ```
 
-##### `getMessages(conversationId: string): ConversationMessage[]`
+##### `getMessages(discussionId: string): ConversationMessage[]`
 
-**Purpose:** Retrieve all messages for a conversation
+**Purpose:** Retrieve all messages for a discussion
 
 **SQL:**
 
 ```sql
-SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC
+SELECT * FROM messages WHERE discussion_id = ? ORDER BY created_at ASC
 ```
 
 ##### `getRecentConversations(limit: number): Conversation[]`
@@ -1072,7 +1073,7 @@ UPDATE conversations SET updated_at = ?, [field] = ? WHERE id = ?
 
 1. Generate UUID
 2. Get current timestamp
-3. Get token limit from environment or default (4800)
+3. Get token limit from environment or default (4000)
 4. Insert into `discussions` table
 5. Return discussion object
 
@@ -1250,7 +1251,7 @@ UPDATE discussions SET updated_at = ?, [field] = ? WHERE id = ?
 
 **Purpose:** Get token limit from environment or default
 
-**Default:** 4800 tokens (60% of 8K context window)
+**Default:** 4000 tokens (50% of 8K context window with safety buffer)
 
 **Environment Variable:** `DISCUSSION_TOKEN_LIMIT`
 
@@ -1379,9 +1380,72 @@ export const authOptions: NextAuthConfig = {
   pages: {
     signIn: '/auth/signin',
   },
-  secret: process.env.NEXTAUTH_SECRET,
+  secret: (() => {
+    const secret = process.env.NEXTAUTH_SECRET;
+    const isProduction = process.env.NODE_ENV === 'production';
+    const defaultSecret = 'development-secret-change-in-production';
+
+    if (isProduction) {
+      if (!secret || secret === defaultSecret) {
+        throw new Error(
+          'NEXTAUTH_SECRET is required in production and must not be the default value. ' +
+          'Please set a strong, random secret in your environment variables. ' +
+          'You can generate one with: openssl rand -base64 32'
+        );
+      }
+    }
+
+    return secret || defaultSecret;
+  })(),
 };
 ```
+
+**Security Features:**
+- Production validation: Fails fast if `NEXTAUTH_SECRET` is missing or using default value
+- Development fallback: Allows default secret only in development mode
+- Clear error messages: Provides instructions for generating secure secrets
+
+### Socket.IO Authentication
+
+**Location:** `src/lib/socket/auth-middleware.ts`
+
+**Purpose:** Authenticate Socket.IO connections using NextAuth session tokens
+
+**Implementation:**
+
+1. **Session Token Extraction:**
+   - Parses cookies from Socket.IO handshake headers
+   - Extracts NextAuth session token from cookies
+   - Supports multiple cookie name formats (production/development)
+
+2. **JWT Verification:**
+   - Uses `jose` library to decode and verify JWT tokens
+   - Verifies token signature using `NEXTAUTH_SECRET`
+   - Extracts user information from JWT payload
+
+3. **User Lookup:**
+   - Verifies user exists in database
+   - Retrieves full user information
+   - Creates `SocketUser` object with authentication status
+
+4. **Connection Handling:**
+   - **Production:** Requires authentication, rejects anonymous connections
+   - **Development:** Allows anonymous connections for testing
+   - Attaches user information to `socket.data.user`
+
+**Functions:**
+
+- `getSessionFromSocket(socket: Socket)`: Extracts and verifies session from socket
+- `authenticateSocket(socket: Socket)`: Main authentication function
+- `getSocketUser(socket: Socket)`: Get user from socket data
+- `isSocketAuthenticated(socket: Socket)`: Check if user is authenticated
+- `getSocketUserId(socket: Socket)`: Get user ID (authenticated or anonymous)
+
+**Security:**
+- JWT tokens verified with secret key
+- User existence verified in database
+- Anonymous connections blocked in production
+- Clear logging for authentication events
 
 ### OAuth Providers
 
@@ -1910,7 +1974,7 @@ interface ModeratorSummary {
 
 - Estimation: ~4 characters per token (English text)
 - Token count tracked per discussion
-- Default limit: 4800 tokens (60% of 8K context window)
+- Default limit: 4000 tokens (50% of 8K context window with safety buffer)
 - Configurable via `DISCUSSION_TOKEN_LIMIT` environment variable
 
 **Summarization Trigger:**
@@ -2114,7 +2178,16 @@ DialogueHero (Main Container)
 - Message content with whitespace preservation
 - Streaming indicator
 - Streaming mode support (word-by-word vs message-by-message)
-- Content sanitization using DOMPurify for XSS protection
+- **XSS Protection:** Content sanitization using DOMPurify
+
+**XSS Protection Implementation:**
+
+- Uses `isomorphic-dompurify` for cross-platform sanitization
+- Sanitizes all user-generated content before rendering
+- Preserves whitespace and formatting while removing XSS vectors
+- Works in both server and client contexts
+- Provides defense-in-depth beyond React's default escaping
+- Handles both streaming and static content
 
 **Imports:**
 
@@ -2319,7 +2392,7 @@ extends ButtonHTMLAttributes<HTMLButtonElement> {
 {
   socket: Socket | null;
   isConnected: boolean;
-  conversationId: string | null;
+  discussionId: string | null;
   currentMessage: { persona: string; turn: number; content: string } | null;
   messages: ConversationMessage[];
   needsUserInput: boolean;
@@ -2344,7 +2417,7 @@ extends ButtonHTMLAttributes<HTMLButtonElement> {
 - `connect` → Set `isConnected = true`
 - `disconnect` → Set `isConnected = false`
 - `connect_error` → Set error
-- `conversation-started` → Set conversationId, reset state
+- `discussion-started` → Set discussionId, reset state
 - `message-start` → Set currentMessage
 - `message-chunk` → Append to currentMessage.content
 - `message-complete` → Add to messages, clear currentMessage
@@ -2665,7 +2738,7 @@ Error occurs at any stage
 
 - `socket.io.Server`, `Socket`
 - `@/lib/db/conversations.*` (all CRUD functions)
-- `@/lib/conversation-context.formatLLMPrompt`
+- `@/lib/discussion-context.formatLLMPrompt`
 - `@/lib/llm.getProviderWithFallback`, `aiPersonas`
 - `@/lib/llm/resolver.isResolved`, `needsUserInput`
 - `@/lib/validation.*` (dialogueRequestSchema, userInputSchema, continueDialogueSchema)
@@ -2725,15 +2798,10 @@ Error occurs at any stage
 - `path.join`
 - `fs.existsSync`, `mkdirSync`
 
-#### `src/lib/db/conversations.ts` ⚠️ DEPRECATED
+#### `src/lib/db/conversations.ts` ⚠️ DEPRECATED (FILE REMOVED)
 
-**Status:** Deprecated - kept for backward compatibility only. Use `discussions.ts` instead.
-**Exports:** `createConversation`, `getConversation`, `updateConversation`, `addMessage`, `getMessages`, `getRecentConversations`
-**Imports:**
-
-- `crypto.randomUUID`
-- `./index.getDatabase`
-- `@/types.Conversation`, `ConversationMessage`
+**Status:** This file has been removed. All functionality has been migrated to `discussions.ts`.
+**Note:** This section is kept for historical reference only. All new code must use `discussions.ts`.
 
 #### `src/lib/db/redis.ts`
 
@@ -2759,24 +2827,24 @@ Error occurs at any stage
 
 #### `src/lib/validation.ts`
 
-**Exports:** `fileDataSchema`, `dialogueRequestSchema`, `conversationIdSchema`, `userInputSchema`, `continueDialogueSchema`, `DialogueRequest`, `FileData`, `UserInputRequest`, `ContinueDialogueRequest`
+**Exports:** `fileDataSchema`, `dialogueRequestSchema`, `discussionIdSchema`, `userInputSchema`, `continueDialogueSchema`, `DialogueRequest`, `FileData`, `UserInputRequest`, `ContinueDialogueRequest`
 **Imports:**
 
 - `zod.z`
 
 **Schemas:**
 
-- `conversationIdSchema` - UUID format validation
+- `discussionIdSchema` - UUID format validation (replaces deprecated conversationIdSchema)
 - `userInputSchema` - User input event validation
 - `continueDialogueSchema` - Continue dialogue event validation
 
-#### `src/lib/conversation-context.ts`
+#### `src/lib/discussion-context.ts`
 
-**Exports:** `loadConversationContext`, `formatLLMPrompt`
+**Exports:** `loadDiscussionContext`, `formatLLMPrompt`
 **Imports:**
 
-- `./db/conversations.getMessages`
-- `@/types.ConversationMessage`
+- `./discussions/file-manager.readDiscussion`
+- `@/types.ConversationMessage`, `DiscussionRound`, `SummaryEntry`
 - `@/lib/validation.FileData`
 
 #### `src/lib/utils.ts`
@@ -2868,7 +2936,7 @@ Error occurs at any stage
 ```
 server.ts
   └─> handlers.ts
-      ├─> db/conversations.ts
+      ├─> db/discussions.ts
       ├─> llm/index.ts
       │   └─> providers/*
       └─> validation.ts
@@ -2920,45 +2988,47 @@ interface ConversationMessage {
 interface StartDialogueEvent {
   topic: string;
   files?: FileData[];
+  userId?: string; // Optional for backward compatibility
 }
 
 interface UserInputEvent {
-  conversationId: string;
+  discussionId: string; // Standardized: always discussionId
   input: string;
 }
 
 interface ContinueDialogueEvent {
-  conversationId: string;
+  discussionId: string; // Standardized: always discussionId
 }
 
 // Server → Client
-interface ConversationStartedEvent {
-  conversationId: string;
+interface DiscussionStartedEvent {
+  discussionId: string | null; // null if hasActiveDiscussion is true
+  hasActiveDiscussion: boolean;
 }
 
 interface MessageStartEvent {
-  conversationId: string;
+  discussionId: string; // Standardized: always discussionId
   persona: string;
   turn: number;
 }
 
 interface MessageChunkEvent {
-  conversationId: string;
+  discussionId: string; // Standardized: always discussionId
   chunk: string;
 }
 
 interface MessageCompleteEvent {
-  conversationId: string;
+  discussionId: string; // Standardized: always discussionId
   message: ConversationMessage;
 }
 
 interface NeedsUserInputEvent {
-  conversationId: string;
+  discussionId: string; // Standardized: always discussionId (deprecated event)
   question?: string;
 }
 
 interface ConversationResolvedEvent {
-  conversationId: string;
+  discussionId: string; // Standardized: always discussionId (event name kept for backward compatibility)
 }
 
 interface SocketErrorEvent {
@@ -3342,7 +3412,7 @@ clientLogger.error('Error occurred', { error: error.message });
 
 ### Prepared Statement Caching
 
-**Location:** `src/lib/db/conversations.ts`, `src/lib/db/discussions.ts`
+**Location:** `src/lib/db/discussions.ts`
 
 **Purpose:** Performance optimization by caching prepared SQL statements
 
@@ -3433,21 +3503,21 @@ clientLogger.error('Error occurred', { error: error.message });
 - `topic`: 10-1000 characters
 - `files`: optional array, max 5 files
 
-##### `conversationIdSchema`
+##### `discussionIdSchema`
 
-- Validates UUID format for conversation IDs
+- Validates UUID format for discussion IDs (replaces deprecated conversationIdSchema)
 - Uses RFC 4122 UUID regex pattern
 
 ##### `userInputSchema`
 
 - Validates user input events
-- `conversationId`: Must be valid UUID
+- `discussionId`: Must be valid UUID
 - `input`: Non-empty string
 
 ##### `continueDialogueSchema`
 
 - Validates continue dialogue events
-- `conversationId`: Must be valid UUID
+- `discussionId`: Must be valid UUID
 
 **Usage:**
 
@@ -3543,7 +3613,7 @@ if (!result.success) {
 
 ### Conversation Context Formatting
 
-#### `src/lib/conversation-context.ts`
+#### `src/lib/discussion-context.ts`
 
 ##### `formatLLMPrompt(topic, messages, isFirstMessage, respondingPersonaName, files?): string`
 
@@ -3590,16 +3660,21 @@ You are now in Exchange N. [Other AI] just said:
 [Response instructions]
 ```
 
-##### `loadConversationContext(conversationId): { messages, formattedTranscript }`
+##### `loadDiscussionContext(discussionId: string, userId: string): Promise<{ topic, messages, rounds, summary, currentSummary, summaries, tokenCount }>`
 
-**Purpose:** Load and format conversation from database
+**Purpose:** Load and format discussion from file storage
 
 **Returns:**
 
-- `messages`: Array of ConversationMessage
-- `formattedTranscript`: Formatted string representation
+- `topic`: Discussion topic
+- `messages`: Array of ConversationMessage (legacy, generated from rounds)
+- `rounds`: Array of DiscussionRound (primary source of truth)
+- `summary`: Legacy summary string (deprecated, use currentSummary)
+- `currentSummary`: Most recent SummaryEntry with metadata
+- `summaries`: All SummaryEntry objects
+- `tokenCount`: Calculated token count for context
 
-**Note:** Currently not used (conversation loaded directly in handlers).
+**Note:** This function loads discussion data from file storage (JSON + Markdown), not database. Rounds are the primary source of truth.
 
 ### Logging System
 
@@ -3762,9 +3837,23 @@ The document serves as a comprehensive reference for understanding, maintaining,
 ---
 
 **Last Updated:** December 2024
-**Version:** 1.2.0 (Updated with operational fixes and enhancements)
+**Version:** 1.3.0 (Updated with security enhancements and code quality improvements)
 
 **Recent Updates:**
+
+- **Security Enhancements:**
+  - Implemented proper Socket.IO authentication with NextAuth session parsing
+  - Activated DOMPurify for XSS protection in MessageBubble component
+  - Added production validation for NEXTAUTH_SECRET to fail fast if missing
+  - Anonymous connections blocked in production mode
+
+- **Code Quality Improvements:**
+  - Removed `any` types, replaced with proper type guards
+  - Fixed ESLint disables with proper ref usage
+  - Refactored large `processDiscussionDialogueRounds()` function into smaller, maintainable functions
+  - Improved type safety throughout codebase
+
+**Previous Updates:**
 
 - Removed deprecated `needs-user-input` event handler
 - Added toast notification system (react-hot-toast) for user feedback

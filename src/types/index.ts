@@ -27,11 +27,6 @@ export interface StartDialogueEvent {
   userId?: string; // Optional for backward compatibility, but recommended for discussions
 }
 
-export interface UserInputEvent {
-  /** Primary identifier for discussion-based system. */
-  discussionId: string;
-  input: string;
-}
 
 export interface DiscussionStartedEvent {
   discussionId: string | null; // null if hasActiveDiscussion is true
@@ -54,10 +49,6 @@ export interface MessageCompleteEvent {
   message: ConversationMessage;
 }
 
-export interface NeedsUserInputEvent {
-  discussionId: string; // Standardized: always discussionId
-  question?: string;
-}
 
 /**
  * Event emitted when a discussion reaches resolution
@@ -81,8 +72,8 @@ export type StreamingMode = 'word-by-word' | 'message-by-message';
 // Round-based discussion types
 export interface DiscussionRound {
   roundNumber: number;
-  solverResponse: ConversationMessage;
   analyzerResponse: ConversationMessage;
+  solverResponse: ConversationMessage;
   moderatorResponse: ConversationMessage; // Required: Moderator AI now participates in discussion
   timestamp: string;
   questions?: QuestionSet;
@@ -144,10 +135,6 @@ export interface ProceedDialogueEvent {
   discussionId: string;
 }
 
-export interface GenerateSummaryEvent {
-  discussionId: string;
-  roundNumber?: number;
-}
 
 export interface GenerateQuestionsEvent {
   discussionId: string;

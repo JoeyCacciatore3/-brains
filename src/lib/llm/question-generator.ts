@@ -22,19 +22,21 @@ export async function generateQuestions(
     const provider = getProviderWithFallback(summarizerPersona.provider);
 
     // Build context for question generation
+    // Order: Analyzer → Solver → Moderator
     const currentRoundText = `[Round ${currentRound.roundNumber}]
-${currentRound.solverResponse.persona}: ${currentRound.solverResponse.content}
-
 ${currentRound.analyzerResponse.persona}: ${currentRound.analyzerResponse.content}
+
+${currentRound.solverResponse.persona}: ${currentRound.solverResponse.content}
 
 ${currentRound.moderatorResponse.persona}: ${currentRound.moderatorResponse.content}`;
 
+    // Order: Analyzer → Solver → Moderator
     const previousRoundsText =
       previousRounds.length > 0
         ? `\n\nPrevious Rounds:\n${previousRounds
             .map(
               (round) =>
-                `[Round ${round.roundNumber}]\n${round.solverResponse.persona}: ${round.solverResponse.content}\n\n${round.analyzerResponse.persona}: ${round.analyzerResponse.content}\n\n${round.moderatorResponse.persona}: ${round.moderatorResponse.content}`
+                `[Round ${round.roundNumber}]\n${round.analyzerResponse.persona}: ${round.analyzerResponse.content}\n\n${round.solverResponse.persona}: ${round.solverResponse.content}\n\n${round.moderatorResponse.persona}: ${round.moderatorResponse.content}`
             )
             .join('\n\n---\n\n')}`
         : '';

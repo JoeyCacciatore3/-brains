@@ -7,11 +7,8 @@ import { HelpCircle } from 'lucide-react';
 
 interface ActionButtonsProps {
   onProceed: () => void;
-  onGenerateSummary: () => void;
   onGenerateQuestions: () => void;
-  onUserInput?: () => void;
   isProcessing?: boolean;
-  isGeneratingSummary?: boolean;
   isGeneratingQuestions?: boolean;
   disabled?: boolean;
   discussionId: string | null;
@@ -41,11 +38,8 @@ function Tooltip({ text, children }: { text: string; children: React.ReactNode }
 
 export function ActionButtons({
   onProceed,
-  onGenerateSummary,
   onGenerateQuestions,
-  onUserInput,
   isProcessing = false,
-  isGeneratingSummary = false,
   isGeneratingQuestions = false,
   disabled = false,
   discussionId,
@@ -85,45 +79,6 @@ export function ActionButtons({
               </>
             ) : (
               'Proceed'
-            )}
-          </Button>
-        </Tooltip>
-
-        {onUserInput && (
-          <Tooltip text="Add your input to direct the current discussion">
-            <Button
-              onClick={onUserInput}
-              disabled={allDisabled || isProcessing}
-              variant="secondary"
-              className={`min-w-[120px] transition-all ${
-                allDisabled || isProcessing
-                  ? 'opacity-50 cursor-not-allowed'
-                  : 'hover:scale-105 active:scale-95'
-              }`}
-            >
-              User Input
-            </Button>
-          </Tooltip>
-        )}
-
-        <Tooltip text="Create a summary of previous rounds to reduce token usage and maintain context">
-          <Button
-            onClick={onGenerateSummary}
-            disabled={allDisabled || isGeneratingSummary}
-            variant="secondary"
-            className={`min-w-[160px] transition-all ${
-              allDisabled || isGeneratingSummary
-                ? 'opacity-50 cursor-not-allowed'
-                : 'hover:scale-105 active:scale-95'
-            }`}
-          >
-            {isGeneratingSummary ? (
-              <>
-                <LoadingSpinner className="mr-2 w-4 h-4" />
-                Generating...
-              </>
-            ) : (
-              'Generate Summary'
             )}
           </Button>
         </Tooltip>

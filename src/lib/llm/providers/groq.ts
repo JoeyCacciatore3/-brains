@@ -1,28 +1,35 @@
-import type { LLMMessage, LLMProvider, LLMConfig } from '../types';
+import type { LLMMessage, LLMProvider, LLMConfig } from '@/lib/llm/types';
 import { logger } from '@/lib/logger';
 import { LLM_CONFIG } from '@/lib/config';
-import { SSEParser } from '../sse-parser';
+import { SSEParser } from '@/lib/llm/sse-parser';
 import { ErrorCode } from '@/lib/errors';
+import { BaseProvider, type StreamResult } from './base-provider';
 
 interface ErrorWithCode extends Error {
   code?: ErrorCode;
 }
 
-export class GroqProvider implements LLMProvider {
+export class GroqProvider extends BaseProvider implements LLMProvider {
   name = 'Groq';
   private apiKey: string;
-  private config: LLMConfig;
 
   constructor(apiKey: string, config: LLMConfig = {}) {
-    this.apiKey = apiKey;
-    this.config = {
+    super({
       model: config.model || 'llama-3.1-8b-instant',
       maxTokens: config.maxTokens || LLM_CONFIG.DEFAULT_MAX_TOKENS,
       temperature: config.temperature || 0.7,
-    };
+    });
+    this.apiKey = apiKey;
   }
 
-  async stream(messages: LLMMessage[], onChunk: (chunk: string) => void): Promise<string> {
+  /**
+   * Internal streaming implementation for Groq
+   * Returns StreamResult with content and finishReason
+   */
+  protected async streamInternal(
+    messages: LLMMessage[],
+    onChunk: (chunk: string) => void
+  ): Promise<StreamResult> {
     // Create AbortController for timeout
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), LLM_CONFIG.DEFAULT_TIMEOUT_MS);
@@ -43,7 +50,7 @@ export class GroqProvider implements LLMProvider {
           max_tokens: this.config.maxTokens,
           temperature: this.config.temperature,
           stream: true,
-          stop: ['\n\n', '. ', '! ', '? '], // Stop sequences to encourage natural sentence endings
+          // No stop sequences - rely on max_tokens and completion logic to handle completion
         }),
         signal: controller.signal,
       });
@@ -125,7 +132,6 @@ export class GroqProvider implements LLMProvider {
               }
             } else if (!parseResult.isComplete) {
               // Incomplete JSON - will be handled in next chunk
-              // Buffer is maintained by parser
               logger.debug('Incomplete JSON chunk, buffering for next chunk', {
                 provider: 'Groq',
                 bufferSize: parser.getBuffer().length,
@@ -174,24 +180,26 @@ export class GroqProvider implements LLMProvider {
         });
       }
 
-      // Log finish_reason for monitoring
-      logger.debug('Groq API response completed', {
+      // CRITICAL: Log finish_reason with full context for debugging
+      const estimatedTokens = Math.ceil(fullContent.trim().length / 4);
+      logger.info('🔍 GROQ RESPONSE COMPLETE: API streaming finished', {
         provider: 'Groq',
         finishReason,
         contentLength: fullContent.length,
+        trimmedLength: fullContent.trim().length,
+        estimatedTokens,
+        maxTokens: this.config.maxTokens,
+        tokenUtilization: this.config.maxTokens ? `${((estimatedTokens / this.config.maxTokens) * 100).toFixed(1)}%` : 'N/A',
+        endsWithPunctuation: /[.!?]\s*$/.test(fullContent.trim()),
+        lastChars: fullContent.trim().slice(-100),
+        timestamp: new Date().toISOString(),
       });
 
-      // If response was cut off due to length, complete the thought
-      if (finishReason === 'length') {
-        logger.info('Response was truncated, completing thought', {
-          provider: 'Groq',
-          initialLength: fullContent.length,
-        });
-        const continuation = await this.completeThought(messages, fullContent);
-        return fullContent + continuation;
-      }
-
-      return fullContent;
+      return {
+        content: fullContent,
+        finishReason,
+        hadCompletion: false,
+      };
     } catch (error) {
       // Ensure timeout is always cleared
       clearTimeout(timeoutId);
@@ -230,13 +238,24 @@ export class GroqProvider implements LLMProvider {
 
   /**
    * Complete a thought that was cut off due to token limit
+   * CRITICAL: onChunk must be provided to emit continuation chunks
    */
-  private async completeThought(
+  protected async completeThoughtInternal(
+    truncatedContent: string,
     originalMessages: LLMMessage[],
-    truncatedContent: string
+    onChunk?: (chunk: string) => void
   ): Promise<string> {
-    // Limit continuation to 20% of original max_tokens (rounded up, minimum 50)
-    const continuationTokens = Math.max(50, Math.ceil(this.config.maxTokens! * 0.2));
+    // Calculate continuation tokens using base class method
+    const continuationTokens = this.calculateContinuationTokens(truncatedContent.trim().length);
+
+    logger.info('Completing thought', {
+      provider: 'Groq',
+      originalLength: truncatedContent.trim().length,
+      continuationTokens,
+      maxTokens: this.config.maxTokens,
+    });
+
+    const completionPrompt = `Complete your previous thought. You were cut off. Finish your statement naturally in ${continuationTokens} tokens or less.`;
 
     const continuationMessages: LLMMessage[] = [
       ...originalMessages,
@@ -246,7 +265,7 @@ export class GroqProvider implements LLMProvider {
       },
       {
         role: 'user',
-        content: `Complete your previous thought. You were cut off. Finish your statement naturally in ${continuationTokens} tokens or less.`,
+        content: completionPrompt,
       },
     ];
 
@@ -271,7 +290,7 @@ export class GroqProvider implements LLMProvider {
             max_tokens: continuationTokens,
             temperature: this.config.temperature,
             stream: true,
-            stop: ['\n\n', '. ', '! ', '? '],
+            // No stop sequences - rely on max_tokens to handle completion
           }),
           signal: controller.signal,
         });
@@ -313,6 +332,21 @@ export class GroqProvider implements LLMProvider {
                 const content = parsed.choices?.[0]?.delta?.content || '';
                 if (content) {
                   continuation += content;
+                  // CRITICAL: Always emit continuation chunks if callback provided
+                  if (onChunk) {
+                    logger.debug('Emitting continuation chunk', {
+                      provider: 'Groq',
+                      chunkLength: content.length,
+                      accumulatedContinuationLength: continuation.length,
+                    });
+                    onChunk(content);
+                  } else {
+                    logger.warn('⚠️ Continuation chunk generated but onChunk callback not provided', {
+                      provider: 'Groq',
+                      chunkLength: content.length,
+                      note: 'This chunk will be lost if not emitted via callback',
+                    });
+                  }
                 }
               }
             }

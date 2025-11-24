@@ -10,15 +10,14 @@ A production-ready Next.js application where three AI personas collaborate throu
   - **Moderator AI**: Participates as a third AI in discussions, guiding, clarifying, synthesizing ideas, and keeping the discussion focused and productive
 - **Hero-Only UI**: Clean, focused single-page experience with no navigation complexity
 - **Modern UI Design**: Black background with white text and green border accents for a sleek, terminal-inspired aesthetic
-- **Concise AI Responses**: Optimized token limits (400 tokens) for more focused and concise AI dialogue
+- **Concise AI Responses**: Optimized token limits (1000 tokens default, configurable via MAX_TOKENS env var) for focused and complete AI dialogue
 - **Initial Topic Display**: The original topic/problem remains visible during the discussion for easy reference
-- **User Input During Discussion**: Add your input at any time to direct the conversation using the "User Input" button
 - **Multi-LLM Support**: Integrates with Groq, Mistral, and OpenRouter APIs with automatic fallback
-- **User Authentication**: OAuth authentication with Google and GitHub for user-specific discussions
+- **User Authentication**: OAuth authentication with GitHub for user-specific discussions
 - **Discussion System**: File-based storage (JSON + Markdown) for persistent, user-specific discussions
 - **Token Management**: Accurate token counting using tiktoken with automatic context management for long discussions
 - **Automatic Summarization**: Intelligent summarization when discussions reach token limits (default: 4000 tokens, 50% of 8K context with safety buffer)
-- **Three-Way Discussion**: Each round includes responses from all three AIs (Solver → Analyzer → Moderator), creating rich, multi-perspective conversations
+- **Three-Way Discussion**: Each round includes responses from all three AIs (Analyzer → Solver → Moderator), creating rich, multi-perspective conversations
 - **Compact Message Bubbles**: Smaller, scrollable message containers (max height 250px) for efficient space usage
 - **Discussion History**: View and manage your discussion history via API
 - **Resolution Detection**: Intelligent algorithm detects when AIs have reached a solution
@@ -27,7 +26,9 @@ A production-ready Next.js application where three AI personas collaborate throu
 - **Rate Limiting**: Built-in protection against API abuse with Redis support for distributed deployments (always enforces limits, even when Redis unavailable)
 - **File Locking**: Distributed file locking (Redis + in-memory) prevents race conditions in concurrent operations
 - **Data Reconciliation**: Automatic reconciliation system to sync database from files and detect inconsistencies
-- **Input Sanitization**: XSS protection using DOMPurify for all user-generated content
+- **Input Sanitization**: XSS protection using DOMPurify for all user-generated content (actively implemented)
+- **Socket.IO Authentication**: Proper NextAuth session-based authentication for WebSocket connections
+- **Production Security**: Anonymous connections blocked in production, NEXTAUTH_SECRET validation
 - **Structured Logging**: Winston-based logging for production monitoring
 - **Health Checks**: `/api/health` endpoint for deployment orchestration
 - **Error Boundaries**: React error boundaries for graceful error handling
@@ -37,9 +38,9 @@ A production-ready Next.js application where three AI personas collaborate throu
 
 ## Tech Stack
 
-- **Framework**: Next.js 14 (App Router)
+- **Framework**: Next.js 16 (App Router)
 - **Language**: TypeScript (strict mode)
-- **Authentication**: NextAuth v5 (OAuth: Google, GitHub)
+- **Authentication**: NextAuth v5 (OAuth: GitHub)
 - **Real-time Communication**: Socket.IO
 - **Styling**: Tailwind CSS
 - **Icons**: Lucide React
@@ -60,7 +61,6 @@ A production-ready Next.js application where three AI personas collaborate throu
   - [Mistral API Key](https://console.mistral.ai/)
   - [OpenRouter API Key](https://openrouter.ai/)
 - (Optional) OAuth credentials for authentication:
-  - [Google OAuth](https://console.cloud.google.com/)
   - [GitHub OAuth](https://github.com/settings/developers)
 
 ## Installation
@@ -92,12 +92,11 @@ A production-ready Next.js application where three AI personas collaborate throu
    OPENROUTER_API_KEY=your_openrouter_api_key_here
    NEXT_PUBLIC_APP_URL=http://localhost:3000
 
-   # Optional: OAuth authentication
-   GOOGLE_CLIENT_ID=your_google_client_id
-   GOOGLE_CLIENT_SECRET=your_google_client_secret
+   # Optional: OAuth authentication (see OAuth Setup section below for detailed instructions)
+   NEXTAUTH_URL=http://localhost:3000
+   NEXTAUTH_SECRET=your_nextauth_secret
    GITHUB_CLIENT_ID=your_github_client_id
    GITHUB_CLIENT_SECRET=your_github_client_secret
-   NEXTAUTH_SECRET=your_nextauth_secret
    ```
 
 5. **Start the development server**
@@ -107,6 +106,102 @@ A production-ready Next.js application where three AI personas collaborate throu
    ```
 
    The browser will automatically open to [http://localhost:3000](http://localhost:3000). If it doesn't open automatically, you can manually navigate to that URL.
+
+## OAuth Authentication Setup
+
+The platform supports OAuth authentication with GitHub. Setting up OAuth is optional but recommended for production use.
+
+### Prerequisites
+
+- A GitHub account (for GitHub OAuth)
+
+### GitHub OAuth Setup
+
+1. **Go to GitHub Developer Settings**
+   - Visit [https://github.com/settings/developers](https://github.com/settings/developers)
+   - Sign in to your GitHub account
+
+2. **Create a New OAuth App**
+   - Click "New OAuth App"
+   - Fill in the application details:
+     - **Application name**: "AI Dialogue Platform" (or your preferred name)
+     - **Homepage URL**:
+       - Development: `http://localhost:3000`
+       - Production: `https://yourdomain.com`
+     - **Authorization callback URL**:
+       - Development: `http://localhost:3000/api/auth/callback/github`
+       - Production: `https://yourdomain.com/api/auth/callback/github`
+
+3. **Copy Credentials**
+   - After creating the app, you'll see the Client ID
+   - Click "Generate a new client secret" to get the Client Secret
+   - Add them to your `.env.local` file:
+     ```env
+     GITHUB_CLIENT_ID=your_github_client_id_here
+     GITHUB_CLIENT_SECRET=your_github_client_secret_here
+     ```
+
+### NextAuth Configuration
+
+1. **Generate NEXTAUTH_SECRET**
+   - Generate a secure random secret:
+     ```bash
+     openssl rand -base64 32
+     ```
+   - Or use an online generator: [https://generate-secret.vercel.app/32](https://generate-secret.vercel.app/32)
+
+2. **Set NEXTAUTH_URL**
+   - Development: `http://localhost:3000`
+   - Production: Your production domain (e.g., `https://yourdomain.com`)
+
+3. **Add to `.env.local`**
+   ```env
+   NEXTAUTH_SECRET=your_generated_secret_here
+   NEXTAUTH_URL=http://localhost:3000
+   ```
+
+### Complete Environment Variables Example
+
+```env
+# LLM API Keys (Required)
+GROQ_API_KEY=your_groq_api_key_here
+MISTRAL_API_KEY=your_mistral_api_key_here
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+
+# Application Settings
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+NODE_ENV=development
+
+# OAuth Authentication (Optional but recommended)
+NEXTAUTH_URL=http://localhost:3000
+NEXTAUTH_SECRET=your_generated_secret_here
+GITHUB_CLIENT_ID=your_github_client_id_here
+GITHUB_CLIENT_SECRET=your_github_client_secret_here
+```
+
+### Testing OAuth
+
+1. **Start the development server**
+   ```bash
+   npm run dev
+   ```
+
+2. **Navigate to the sign-in page**
+   - Go to `http://localhost:3000/auth/signin`
+   - Or click "Sign In" on the main page
+
+3. **Test the OAuth flow**
+   - Click "Sign in with GitHub"
+   - Complete the OAuth consent flow
+   - You should be redirected back to the home page
+   - Your user menu should appear in the header
+
+### Production Considerations
+
+- **NEXTAUTH_SECRET**: Must be a strong, random value in production. Never use the default development secret.
+- **NEXTAUTH_URL**: Must match your production domain exactly
+- **OAuth Redirect URIs**: Must be updated in GitHub settings to use your production domain
+- **HTTPS**: OAuth requires HTTPS in production. Ensure your deployment platform provides SSL certificates.
 
 ## Development
 
@@ -150,7 +245,6 @@ A production-ready Next.js application where three AI personas collaborate throu
 │   │   │   ├── client.ts       # Client-side socket hook
 │   │   │   └── handlers.ts     # Server-side socket handlers
 │   │   ├── db/                 # Database operations
-│   │   │   ├── conversations.ts # Conversation CRUD (⚠️ DEPRECATED)
 │   │   │   ├── discussions.ts   # Discussion CRUD (primary)
 │   │   │   ├── schema.ts        # Database schema
 │   │   │   ├── index.ts         # Database connection
@@ -160,7 +254,7 @@ A production-ready Next.js application where three AI personas collaborate throu
 │   │   ├── logger.ts          # Winston logging
 │   │   ├── env-validation.ts  # Environment validation
 │   │   ├── errors.ts          # Standardized error codes
-│   │   ├── conversation-context.ts # LLM prompt formatting
+│   │   ├── discussion-context.ts # LLM prompt formatting
 │   │   └── utils.ts            # Utility functions
 │   └── types/                  # TypeScript types
 ├── tests/                     # Test files
@@ -259,17 +353,6 @@ socket.emit('start-dialogue', {
 });
 ```
 
-**`user-input`**
-Provide user input to direct the discussion. Can be used at any time during an active discussion, not just when the AIs explicitly request clarification.
-
-```typescript
-socket.emit('user-input', {
-  discussionId: 'uuid', // Required: discussion identifier
-  input: 'User response text', // Minimum 10 characters, maximum 1000 characters
-});
-```
-
-**Note:** The `conversationId` field has been removed. Use `discussionId` only. The backend accepts user input even when `needs_user_input` is false, allowing users to guide the conversation proactively.
 
 #### Server → Client Events
 
@@ -363,7 +446,7 @@ socket.on(
 ```
 
 **`round-complete`**
-Emitted when all three AIs in a round have finished responding (Solver → Analyzer → Moderator).
+Emitted when all three AIs in a round have finished responding (Analyzer → Solver → Moderator).
 
 ```typescript
 socket.on(
@@ -462,12 +545,10 @@ socket.on(
 | `REDIS_HOST`              | Redis hostname                                          | No (default: `localhost`, used if REDIS_URL not set)       |
 | `REDIS_PORT`              | Redis port                                              | No (default: 6379)                                         |
 | `REDIS_PASSWORD`          | Redis password                                          | No                                                         |
-| `GOOGLE_CLIENT_ID`        | Google OAuth client ID                                  | No (optional, for authentication)                          |
-| `GOOGLE_CLIENT_SECRET`    | Google OAuth client secret                              | No (optional, for authentication)                          |
 | `GITHUB_CLIENT_ID`        | GitHub OAuth client ID                                  | No (optional, for authentication)                          |
 | `GITHUB_CLIENT_SECRET`    | GitHub OAuth client secret                              | No (optional, for authentication)                          |
 | `NEXTAUTH_SECRET`         | NextAuth secret for JWT signing                         | No (optional, for authentication)                          |
-| `DISCUSSION_TOKEN_LIMIT`  | Token limit for discussions                             | No (default: 4800)                                         |
+| `DISCUSSION_TOKEN_LIMIT`  | Token limit for discussions                             | No (default: 4000)                                         |
 
 ## Testing
 

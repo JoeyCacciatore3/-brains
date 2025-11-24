@@ -37,25 +37,15 @@ export function validateEnvironment(): ValidationResult {
   }
 
   // Validate OAuth configuration if provided
-  const hasGoogleClientId = !!process.env.GOOGLE_CLIENT_ID;
-  const hasGoogleClientSecret = !!process.env.GOOGLE_CLIENT_SECRET;
   const hasGithubClientId = !!process.env.GITHUB_CLIENT_ID;
   const hasGithubClientSecret = !!process.env.GITHUB_CLIENT_SECRET;
   const hasNextAuthSecret = !!process.env.NEXTAUTH_SECRET;
 
   // If any OAuth credentials are provided, validate they're complete
-  if (hasGoogleClientId || hasGoogleClientSecret || hasGithubClientId || hasGithubClientSecret) {
+  if (hasGithubClientId || hasGithubClientSecret) {
     // NEXTAUTH_SECRET is required for OAuth
     if (!hasNextAuthSecret) {
       errors.push('NEXTAUTH_SECRET is required when OAuth credentials are provided');
-    }
-
-    // Google OAuth validation
-    if (hasGoogleClientId && !hasGoogleClientSecret) {
-      errors.push('GOOGLE_CLIENT_SECRET is required when GOOGLE_CLIENT_ID is set');
-    }
-    if (!hasGoogleClientId && hasGoogleClientSecret) {
-      errors.push('GOOGLE_CLIENT_ID is required when GOOGLE_CLIENT_SECRET is set');
     }
 
     // GitHub OAuth validation

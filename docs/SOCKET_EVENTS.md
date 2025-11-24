@@ -94,7 +94,7 @@ The application uses a **round-based discussion system** where:
 
 ### `round-complete`
 
-**Emitted when:** All three AIs in a round have finished responding (Solver → Analyzer → Moderator)
+**Emitted when:** All three AIs in a round have finished responding (Analyzer → Solver → Moderator)
 
 **Payload:**
 
@@ -234,34 +234,6 @@ The application uses a **round-based discussion system** where:
 
 ---
 
-### `user-input`
-
-**Emitted when:** User provides input to continue discussion
-
-**Payload:**
-
-```typescript
-{
-  discussionId: string; // Required: discussion identifier
-  input: string;
-}
-```
-
-**Server Action:** Appends user message, continues dialogue processing
-
-**Acknowledgments:** Yes - Server sends acknowledgment after user input is saved (before async processing starts)
-
-**Acknowledgment Response:**
-
-```typescript
-{
-  data?: { discussionId: string };
-  error?: string;
-}
-```
-
----
-
 ### `submit-answers`
 
 **Emitted when:** User submits answers to questions
@@ -317,21 +289,6 @@ The application uses a **round-based discussion system** where:
 ```
 
 ---
-
-### `generate-summary`
-
-**Emitted when:** User requests summary generation
-
-**Payload:**
-
-```typescript
-{
-  discussionId: string;
-  roundNumber?: number; // Optional, defaults to current round
-}
-```
-
-**Server Action:** Generates summary for specified rounds
 
 **Acknowledgments:** Yes - Server sends acknowledgment after summary is generated
 
@@ -407,10 +364,8 @@ All critical client events support Socket.IO acknowledgments for delivery confir
 **Events with Acknowledgments:**
 
 - `start-dialogue`
-- `user-input`
 - `submit-answers`
 - `proceed-dialogue`
-- `generate-summary`
 - `generate-questions`
 
 **Client Implementation:**

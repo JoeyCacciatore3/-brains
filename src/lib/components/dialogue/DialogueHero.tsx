@@ -1,7 +1,9 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Brain, MessageSquare, ChevronDown, ChevronUp, X, FileText, RefreshCw } from 'lucide-react';
+import { useSearchParams } from 'next/navigation';
+import Image from 'next/image';
+import { MessageSquare, ChevronDown, ChevronUp, X, FileText, RefreshCw } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 import toast from 'react-hot-toast';
 import { InputSection } from './InputSection';
@@ -11,13 +13,16 @@ import { QuestionGenerator } from './QuestionGenerator';
 import { ActionButtons } from './ActionButtons';
 import { RoundAccordion } from './RoundAccordion';
 import { InitialTopicDisplay } from './InitialTopicDisplay';
-import { UserInputModal } from './UserInputModal';
+import { LoginButton } from '@/lib/components/auth/LoginButton';
+import { UserMenu } from '@/lib/components/auth/UserMenu';
+import { DeleteConfirmationDialog } from '@/lib/components/discussions/DeleteConfirmationDialog';
 import { useSocket } from '@/lib/socket/client';
 import type { FileData } from '@/lib/validation';
 
 export function DialogueHero() {
   const { data: session } = useSession();
   const userId = (session?.user as { id?: string })?.id;
+  const searchParams = useSearchParams();
 
   const {
     isConnected,
@@ -35,38 +40,57 @@ export function DialogueHero() {
     startDialogue,
     submitAnswers,
     proceedDialogue,
-    generateSummary,
     generateQuestions,
-    sendUserInput,
     reset,
     reconnect,
   } = useSocket();
 
   const conversationEndRef = useRef<HTMLDivElement>(null);
-  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
   const [isGeneratingQuestions, setIsGeneratingQuestions] = useState(false);
   const [expandedSummaries, setExpandedSummaries] = useState<Set<number>>(new Set());
   const [dismissedSummaries, setDismissedSummaries] = useState<Set<number>>(new Set());
   const [initialTopic, setInitialTopic] = useState<string | null>(null);
-  const [isUserInputModalOpen, setIsUserInputModalOpen] = useState(false);
+  const [isLoadingDiscussion, setIsLoadingDiscussion] = useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
 
   const scrollToBottom = () => {
     conversationEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
+  // Load discussion from URL query parameter
+  useEffect(() => {
+    const discussionIdParam = searchParams?.get('discussionId');
+    if (discussionIdParam && isConnected && !discussionId && !isLoadingDiscussion) {
+      setIsLoadingDiscussion(true);
+      // Fetch discussion data
+      fetch(`/api/discussions`)
+        .then((res) => res.json())
+        .then((data) => {
+          const discussion = data.discussions?.find((d: { id: string }) => d.id === discussionIdParam);
+          if (discussion) {
+            setInitialTopic(discussion.topic);
+            // The discussion will be loaded when the socket connects and emits discussion-started
+            // For now, we'll need to trigger a load-discussion event or modify start-dialogue
+            // Since we don't have a load-discussion event, we'll show a message
+            toast.success('Discussion loaded', { icon: '📚' });
+          } else {
+            toast.error('Discussion not found');
+          }
+        })
+        .catch((error) => {
+          console.error('Error loading discussion:', error);
+          toast.error('Failed to load discussion');
+        })
+        .finally(() => {
+          setIsLoadingDiscussion(false);
+        });
+    }
+  }, [searchParams, isConnected, discussionId, isLoadingDiscussion]);
+
   useEffect(() => {
     scrollToBottom();
   }, [rounds, currentRound, currentMessage]);
 
-  // Clear loading states when summary/questions are generated and show success toasts
-  useEffect(() => {
-    if (currentSummary) {
-      setIsGeneratingSummary(false);
-      toast.success('Summary generated successfully!', {
-        icon: '📝',
-      });
-    }
-  }, [currentSummary]);
 
   useEffect(() => {
     if (currentQuestionSet) {
@@ -81,7 +105,6 @@ export function DialogueHero() {
   useEffect(() => {
     if (error) {
       // Clear loading states if error occurs (user can retry)
-      setIsGeneratingSummary(false);
       setIsGeneratingQuestions(false);
     }
   }, [error]);
@@ -102,37 +125,74 @@ export function DialogueHero() {
     proceedDialogue();
   };
 
-  const handleGenerateSummary = () => {
-    setIsGeneratingSummary(true);
-    generateSummary();
-  };
-
   const handleGenerateQuestions = () => {
     setIsGeneratingQuestions(true);
     generateQuestions();
   };
 
-  const handleUserInputClick = () => {
-    setIsUserInputModalOpen(true);
+  const handleDeleteClick = () => {
+    setIsDeleteDialogOpen(true);
   };
 
-  const handleUserInputSubmit = (input: string) => {
-    if (input.trim() && discussionId) {
-      sendUserInput(input);
-      setIsUserInputModalOpen(false);
-    }
+  const handleDeleteConfirmed = () => {
+    // Reset socket state (clears discussionId, rounds, etc.)
+    reset();
+    // Clear initial topic
+    setInitialTopic(null);
+    // Close dialog
+    setIsDeleteDialogOpen(false);
+    // Show success message (toast is already shown by DeleteConfirmationDialog)
+    toast.success('Discussion deleted. You can start a new discussion.');
   };
 
   const isProcessing = currentMessage !== null;
 
+  const isAuthenticated = !!session?.user;
+
   return (
     <div className="min-h-screen bg-black p-6">
-      <div className="max-w-5xl mx-auto border-2 border-green-500 rounded-lg p-6">
+      {/* Connection Status - Top Left */}
+      {connectionState === 'connected' && !error && (
+        <div className="fixed top-4 left-4 flex items-center gap-2 z-50">
+          <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+          <p className="text-green-500 text-xs">Connected</p>
+        </div>
+      )}
+      {/* Sign In Button - Top Right */}
+      <div className="fixed top-4 right-4 z-50">
+        {isAuthenticated ? <UserMenu /> : <LoginButton showPastDiscussions={true} />}
+      </div>
+      <div className="max-w-5xl mx-auto rounded-lg p-6">
         {/* Header */}
-        <div className="text-center mb-8 border-b-2 border-green-500 pb-4">
-          <div className="flex items-center justify-center gap-3 mb-4">
-            <Brain className="w-10 h-10 text-green-500" />
-            <h1 className="text-4xl font-bold text-white">AI Dialogue Platform</h1>
+        <div className="text-center mb-8 pb-4">
+          <div className="flex flex-col items-center mb-4">
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <Image
+                src="/assets/brainslogo_pink.png"
+                alt="br.AI.ns Logo Pink"
+                width={120}
+                height={120}
+                className="object-contain"
+                unoptimized
+              />
+              <Image
+                src="/.github/assets/brainslogo.png?v=2"
+                alt="br.AI.ns Logo"
+                width={120}
+                height={120}
+                className="object-contain"
+                unoptimized
+              />
+              <Image
+                src="/assets/brainslogo_red.png"
+                alt="br.AI.ns Logo Red"
+                width={120}
+                height={120}
+                className="object-contain"
+                unoptimized
+              />
+            </div>
+            <h1 className="text-4xl font-bold text-white">br.AI.ns</h1>
           </div>
           <p className="text-white text-lg">
             Three AI minds collaborate to solve problems and analyze topics through dialogue
@@ -261,16 +321,26 @@ export function DialogueHero() {
             </div>
           )}
 
-          {connectionState === 'connected' && !error && (
-            <div className="mt-2 p-3 bg-black border-2 border-green-500 rounded">
-              <p className="text-green-500 text-sm">✓ Connected</p>
-            </div>
-          )}
         </div>
 
         {/* Initial Topic Display */}
         {initialTopic && discussionId && (
-          <InitialTopicDisplay topic={initialTopic} />
+          <InitialTopicDisplay
+            topic={initialTopic}
+            discussionId={discussionId}
+            onDelete={handleDeleteClick}
+          />
+        )}
+
+        {/* Delete Confirmation Dialog */}
+        {discussionId && initialTopic && (
+          <DeleteConfirmationDialog
+            discussionId={discussionId}
+            topic={initialTopic}
+            isOpen={isDeleteDialogOpen}
+            onClose={() => setIsDeleteDialogOpen(false)}
+            onDeleted={handleDeleteConfirmed}
+          />
         )}
 
         {/* Input Section */}
@@ -282,9 +352,42 @@ export function DialogueHero() {
           userId={userId}
         />
 
+
+        {/* Resolution Banner */}
+        {isResolved && <ResolutionBanner />}
+
+        {/* Current Round Display */}
+        {currentRound && (
+          <div className="bg-black rounded px-6 pb-6 pt-0 mb-6">
+            <h2 className="text-2xl font-semibold text-white mb-2 flex items-center gap-2 tracking-tight">
+              <MessageSquare className="w-6 h-6 text-green-500" />
+              Round {currentRound.roundNumber}
+            </h2>
+            <RoundDisplay
+              round={currentRound}
+              isCurrentRound={true}
+            />
+            {/* Action Buttons - Show when waiting for action after round completion */}
+            {waitingForAction && !isResolved && (
+              <div className="mt-4">
+                <ActionButtons
+                  onProceed={handleProceed}
+                  onGenerateQuestions={handleGenerateQuestions}
+                  isProcessing={isProcessing}
+                  isGeneratingQuestions={isGeneratingQuestions}
+                  disabled={!isConnected}
+                  discussionId={discussionId}
+                  isResolved={isResolved}
+                />
+              </div>
+            )}
+            <div ref={conversationEndRef} />
+          </div>
+        )}
+
         {/* Summary Display - Enhanced */}
         {currentSummary && !dismissedSummaries.has(currentSummary.roundNumber) && (
-          <div className="bg-black rounded p-6 mb-6 border-2 border-green-500">
+          <div className="bg-gray-800/40 rounded-lg p-6 mb-6 border border-gray-600/50">
             <div className="flex items-start justify-between mb-3">
               <button
                 onClick={() => {
@@ -298,7 +401,7 @@ export function DialogueHero() {
                     return next;
                   });
                 }}
-                className="flex items-center gap-2 text-green-400 font-semibold hover:text-green-300 transition-colors"
+                className="flex items-center gap-2 text-gray-300 font-semibold hover:text-gray-200 transition-colors"
               >
                 {expandedSummaries.has(currentSummary.roundNumber) ? (
                   <ChevronDown className="w-5 h-5" />
@@ -309,14 +412,6 @@ export function DialogueHero() {
                 <span>Discussion Summary (Round {currentSummary.roundNumber})</span>
               </button>
               <div className="flex items-center gap-2">
-                <button
-                  onClick={() => handleGenerateSummary()}
-                  className="p-1.5 text-green-400 hover:text-green-300 hover:bg-green-500/20 rounded transition-colors"
-                  title="Regenerate summary"
-                  disabled={isGeneratingSummary}
-                >
-                  <RefreshCw className={`w-4 h-4 ${isGeneratingSummary ? 'animate-spin' : ''}`} />
-                </button>
                 <button
                   onClick={() => {
                     setDismissedSummaries((prev) => new Set(prev).add(currentSummary.roundNumber));
@@ -331,25 +426,25 @@ export function DialogueHero() {
 
             {expandedSummaries.has(currentSummary.roundNumber) && (
               <div className="mt-4 space-y-3 animate-fade-in">
-                <div className="bg-black rounded p-4 border-2 border-green-500">
+                <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-600/50">
                   <p className="text-white text-sm whitespace-pre-wrap">
                     {currentSummary.summary}
                   </p>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
-                  <div className="bg-black rounded p-3 border-2 border-green-500">
+                  <div className="bg-gray-800/50 rounded-lg p-3 border border-gray-600/50">
                     <div className="text-white mb-1">Token Savings</div>
-                    <div className="text-green-500 font-semibold">
+                    <div className="text-gray-300 font-semibold">
                       {currentSummary.tokenCountBefore - currentSummary.tokenCountAfter} tokens
                     </div>
                     <div className="text-gray-400 text-xs mt-1">
                       {currentSummary.tokenCountBefore} → {currentSummary.tokenCountAfter}
                     </div>
                   </div>
-                  <div className="bg-black rounded p-3 border-2 border-green-500">
+                  <div className="bg-gray-800/50 rounded-lg p-3 border border-gray-600/50">
                     <div className="text-white mb-1">Replaces Rounds</div>
-                    <div className="text-green-500 font-semibold">
+                    <div className="text-gray-300 font-semibold">
                       {currentSummary.replacesRounds.length} round
                       {currentSummary.replacesRounds.length !== 1 ? 's' : ''}
                     </div>
@@ -357,9 +452,9 @@ export function DialogueHero() {
                       {currentSummary.replacesRounds.join(', ')}
                     </div>
                   </div>
-                  <div className="bg-black rounded p-3 border-2 border-green-500">
+                  <div className="bg-gray-800/50 rounded-lg p-3 border border-gray-600/50">
                     <div className="text-white mb-1">Created</div>
-                    <div className="text-green-500 font-semibold">
+                    <div className="text-gray-300 font-semibold">
                       {new Date(currentSummary.createdAt).toLocaleDateString()}
                     </div>
                     <div className="text-gray-400 text-xs mt-1">
@@ -375,7 +470,7 @@ export function DialogueHero() {
                       // This could be enhanced to actually expand those rounds
                       // For now, just a placeholder for future enhancement
                     }}
-                    className="text-green-400 hover:text-green-300 text-sm underline"
+                    className="text-gray-400 hover:text-gray-300 text-sm underline"
                   >
                     View original rounds ({currentSummary.replacesRounds.join(', ')})
                   </button>
@@ -401,91 +496,6 @@ export function DialogueHero() {
           </div>
         )}
 
-        {/* Note: User input is handled via action buttons after rounds, not via needsUserInput state */}
-
-        {/* AI Info */}
-        <div className="bg-black rounded p-4 mb-6 border-2 border-green-500">
-          <h3 className="text-white font-semibold mb-3 flex items-center gap-2">
-            <MessageSquare className="w-5 h-5 text-green-500" />
-            The Three AIs
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="flex items-start gap-3 bg-black p-4 rounded border-2 border-green-500">
-              <div className="w-3 h-3 rounded-full bg-green-500 flex-shrink-0 mt-1.5"></div>
-              <div>
-                <div className="text-white font-semibold">Analyzer AI</div>
-                <div className="text-gray-400 text-sm mt-1">
-                  Examines assumptions, explores implications, and challenges ideas to deepen
-                  understanding
-                </div>
-              </div>
-            </div>
-            <div className="flex items-start gap-3 bg-black p-4 rounded border-2 border-green-500">
-              <div className="w-3 h-3 rounded-full bg-green-500 flex-shrink-0 mt-1.5"></div>
-              <div>
-                <div className="text-white font-semibold">Solver AI</div>
-                <div className="text-gray-400 text-sm mt-1">
-                  Focuses on practical solutions, implementation, and breaking down problems
-                  systematically
-                </div>
-              </div>
-            </div>
-            <div className="flex items-start gap-3 bg-black p-4 rounded border-2 border-green-500">
-              <div className="w-3 h-3 rounded-full bg-green-500 flex-shrink-0 mt-1.5"></div>
-              <div>
-                <div className="text-white font-semibold">Moderator AI</div>
-                <div className="text-gray-400 text-sm mt-1">
-                  Synthesizes ideas, bridges viewpoints, and guides the discussion toward
-                  actionable conclusions
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Resolution Banner */}
-        {isResolved && <ResolutionBanner />}
-
-        {/* Current Round Display */}
-        {currentRound && (
-          <div className="bg-black rounded p-6 border-2 border-green-500 mb-6">
-            <h2 className="text-2xl font-bold text-white mb-4 flex items-center gap-2">
-              <MessageSquare className="w-6 h-6 text-green-500" />
-              Round {currentRound.roundNumber}
-            </h2>
-            <RoundDisplay
-              round={currentRound}
-              isCurrentRound={true}
-            />
-            <div ref={conversationEndRef} />
-          </div>
-        )}
-
-        {/* Action Buttons - Show when waiting for action after round completion */}
-        {currentRound && waitingForAction && !isResolved && (
-          <ActionButtons
-            onProceed={handleProceed}
-            onGenerateSummary={handleGenerateSummary}
-            onGenerateQuestions={handleGenerateQuestions}
-            onUserInput={handleUserInputClick}
-            isProcessing={isProcessing}
-            isGeneratingSummary={isGeneratingSummary}
-            isGeneratingQuestions={isGeneratingQuestions}
-            disabled={!isConnected}
-            discussionId={discussionId}
-            isResolved={isResolved}
-          />
-        )}
-
-        {/* User Input Modal */}
-        <UserInputModal
-          isOpen={isUserInputModalOpen}
-          onClose={() => setIsUserInputModalOpen(false)}
-          onSubmit={handleUserInputSubmit}
-          isProcessing={isProcessing}
-          error={error || undefined}
-        />
-
         {/* Round Accordion - Previous Rounds */}
         {rounds.length > 0 && (
           <RoundAccordion
@@ -497,9 +507,9 @@ export function DialogueHero() {
 
         {/* Streaming Message Display (for current round being generated) */}
         {currentMessage && !currentRound && (
-          <div className="bg-black rounded p-6 border-2 border-green-500 mb-6">
-            <h2 className="text-2xl font-bold text-white mb-4 flex items-center gap-2">
-              <MessageSquare className="w-6 h-6 text-green-500" />
+          <div className="bg-gray-800/40 rounded-lg p-6 border border-gray-600/50 mb-6">
+            <h2 className="text-2xl font-semibold text-white mb-4 flex items-center gap-2 tracking-tight">
+              <MessageSquare className="w-6 h-6 text-gray-400" />
               Generating Response...
             </h2>
             <div className="text-white">{currentMessage.persona} is thinking...</div>
