@@ -1,11 +1,14 @@
 # LLM Workflow Documentation
 
 **Date:** December 2024
-**Version:** 1.0.0
+**Version:** 1.1.0
+**Last Updated:** December 2024 (Comprehensive System Review)
 
 ## Overview
 
 This document describes the LLM workflow, including how responses are streamed to the UI, how turn order is enforced, and how chunks are accumulated to ensure complete context is displayed.
+
+**Note:** For a comprehensive review of all LLM system components, token counting, prompt management, and data storage, see [LLM_SYSTEM_REVIEW.md](./LLM_SYSTEM_REVIEW.md).
 
 ## Turn Order System
 

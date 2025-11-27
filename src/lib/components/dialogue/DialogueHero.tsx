@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Image from 'next/image';
-import { MessageSquare, ChevronDown, ChevronUp, X, FileText, RefreshCw } from 'lucide-react';
+import { MessageSquare, ChevronDown, ChevronUp, X, FileText } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 import toast from 'react-hot-toast';
 import { InputSection } from './InputSection';
@@ -16,8 +16,10 @@ import { InitialTopicDisplay } from './InitialTopicDisplay';
 import { LoginButton } from '@/lib/components/auth/LoginButton';
 import { UserMenu } from '@/lib/components/auth/UserMenu';
 import { DeleteConfirmationDialog } from '@/lib/components/discussions/DeleteConfirmationDialog';
+import { WarningModal } from './WarningModal';
 import { useSocket } from '@/lib/socket/client';
 import type { FileData } from '@/lib/validation';
+import { clientLogger } from '@/lib/client-logger';
 
 export function DialogueHero() {
   const { data: session } = useSession();
@@ -35,6 +37,9 @@ export function DialogueHero() {
     summaries,
     waitingForAction,
     isResolved,
+    solution,
+    finalizedSummary,
+    resolutionConfidence,
     error,
     discussionId,
     startDialogue,
@@ -52,6 +57,7 @@ export function DialogueHero() {
   const [initialTopic, setInitialTopic] = useState<string | null>(null);
   const [isLoadingDiscussion, setIsLoadingDiscussion] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [isNewDiscussionModalOpen, setIsNewDiscussionModalOpen] = useState(false);
 
   const scrollToBottom = () => {
     conversationEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -78,7 +84,10 @@ export function DialogueHero() {
           }
         })
         .catch((error) => {
-          console.error('Error loading discussion:', error);
+          clientLogger.error('Error loading discussion', {
+            error: error instanceof Error ? error.message : String(error),
+            discussionId: discussionIdParam,
+          });
           toast.error('Failed to load discussion');
         })
         .finally(() => {
@@ -158,8 +167,28 @@ export function DialogueHero() {
           <p className="text-green-500 text-xs">Connected</p>
         </div>
       )}
-      {/* Sign In Button - Top Right */}
-      <div className="fixed top-4 right-4 z-50">
+      {/* Header Actions - Top Right */}
+      <div className="fixed top-4 right-4 z-50 flex items-center gap-3">
+        {/* Start New Discussion Button */}
+        {(discussionId || !discussionId) && (
+          <button
+            onClick={() => {
+              if (discussionId && !isResolved) {
+                // Show warning if there's an active discussion
+                setIsNewDiscussionModalOpen(true);
+              } else {
+                // No active discussion or already resolved - start new immediately
+                reset();
+                setInitialTopic(null);
+              }
+            }}
+            className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition-colors"
+            type="button"
+          >
+            {isResolved ? 'Start New Discussion' : 'New Discussion'}
+          </button>
+        )}
+        {/* Sign In / User Menu */}
         {isAuthenticated ? <UserMenu /> : <LoginButton showPastDiscussions={true} />}
       </div>
       <div className="max-w-5xl mx-auto rounded-lg p-6">
@@ -343,6 +372,17 @@ export function DialogueHero() {
           />
         )}
 
+        {/* Warning Modal for Starting New Discussion */}
+        <WarningModal
+          isOpen={isNewDiscussionModalOpen}
+          onClose={() => setIsNewDiscussionModalOpen(false)}
+          onConfirm={() => {
+            reset();
+            setInitialTopic(null);
+          }}
+          topic={initialTopic || undefined}
+        />
+
         {/* Input Section */}
         <InputSection
           onStart={handleStart}
@@ -354,7 +394,9 @@ export function DialogueHero() {
 
 
         {/* Resolution Banner */}
-        {isResolved && <ResolutionBanner />}
+        {isResolved && (
+          <ResolutionBanner solution={solution} finalizedSummary={finalizedSummary} confidence={resolutionConfidence} />
+        )}
 
         {/* Current Round Display */}
         {currentRound && (

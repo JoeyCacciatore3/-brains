@@ -21,16 +21,19 @@ import {
   filterIncompleteRounds,
   calculateTurnNumber,
 } from './round-utils';
+import { FILE_STORAGE_CONFIG } from '@/lib/config';
 
 const DISCUSSIONS_DIR =
-  process.env.DISCUSSIONS_DIR || path.join(process.cwd(), 'data', 'discussions');
+  FILE_STORAGE_CONFIG.DISCUSSIONS_DIR.startsWith('/') || FILE_STORAGE_CONFIG.DISCUSSIONS_DIR.startsWith('data/')
+    ? FILE_STORAGE_CONFIG.DISCUSSIONS_DIR
+    : path.join(process.cwd(), FILE_STORAGE_CONFIG.DISCUSSIONS_DIR);
 
 /**
  * Retry configuration for file operations
  */
 const FILE_OPERATION_RETRY_CONFIG = {
-  MAX_ATTEMPTS: parseInt(process.env.FILE_OPERATION_MAX_RETRIES || '3', 10),
-  INITIAL_DELAY_MS: parseInt(process.env.FILE_OPERATION_RETRY_DELAY_MS || '100', 10),
+  MAX_ATTEMPTS: FILE_STORAGE_CONFIG.FILE_OPERATION_MAX_RETRIES,
+  INITIAL_DELAY_MS: FILE_STORAGE_CONFIG.FILE_OPERATION_RETRY_DELAY_MS,
 };
 
 /**
@@ -102,13 +105,14 @@ function categorizeError(error: unknown): { isTransient: boolean; category: stri
     }
   }
 
-  // Default: treat as transient (safer to retry than to fail immediately)
-  // But log for monitoring
-  logger.debug('Uncategorized error, treating as transient', {
+  // Default: treat as permanent (fail fast) - safer than retrying unknown errors
+  // Log warning for monitoring to improve categorization over time
+  logger.warn('Uncategorized error, treating as permanent (fail fast)', {
     error: errorMessage,
     code: errorCode,
+    note: 'Please add specific pattern to categorize this error type',
   });
-  return { isTransient: true, category: 'uncategorized' };
+  return { isTransient: false, category: 'uncategorized' };
 }
 
 async function retryFileOperation<T>(
@@ -190,8 +194,50 @@ async function writeDiscussionFilesAtomically(
   const jsonTempPath = `${jsonPath}.tmp.${timestamp}.${randomUUID()}`;
   const mdTempPath = `${mdPath}.tmp.${timestamp}.${randomUUID()}`;
 
+  // Track all temp files created during this operation
+  const tempFiles = new Set<string>();
+  tempFiles.add(jsonTempPath);
+  tempFiles.add(mdTempPath);
+
   let originalError: Error | unknown;
   const cleanupErrors: Array<{ file: string; error: Error | unknown }> = [];
+
+  // Helper function to cleanup tracked temp files
+  const cleanupTempFiles = async (): Promise<void> => {
+    const cleanupPromises = Array.from(tempFiles).map(async (tempFile) => {
+      try {
+        await fs.access(tempFile); // Check if file exists
+        await fs.unlink(tempFile);
+        tempFiles.delete(tempFile); // Remove from tracking after successful cleanup
+      } catch (cleanupError) {
+        // File doesn't exist or cleanup failed - log but don't throw
+        if ((cleanupError as NodeJS.ErrnoException).code !== 'ENOENT') {
+          cleanupErrors.push({ file: tempFile, error: cleanupError });
+        }
+      }
+    });
+
+    await Promise.allSettled(cleanupPromises);
+
+    // Log cleanup errors if any occurred (but don't throw - original error is more important)
+    if (cleanupErrors.length > 0) {
+      logger.warn('Failed to cleanup some temp files after error', {
+        cleanupErrors: cleanupErrors.map((e) => ({
+          file: e.file,
+          error: e.error instanceof Error ? e.error.message : String(e.error),
+        })),
+        originalError: originalError instanceof Error ? originalError.message : String(originalError),
+        tempFilesRemaining: Array.from(tempFiles),
+      });
+    }
+
+    // If any temp files remain, they will be cleaned up by the periodic temp-cleanup job
+    if (tempFiles.size > 0) {
+      logger.debug('Some temp files remain after cleanup attempt (will be cleaned by periodic job)', {
+        remainingFiles: Array.from(tempFiles),
+      });
+    }
+  };
 
   try {
     // Write to temp files first
@@ -205,6 +251,10 @@ async function writeDiscussionFilesAtomically(
 
     // Atomically rename temp files to final names (rename is atomic on most filesystems)
     await Promise.all([fs.rename(jsonTempPath, jsonPath), fs.rename(mdTempPath, mdPath)]);
+
+    // After successful rename, remove temp files from tracking (they no longer exist as temp files)
+    tempFiles.delete(jsonTempPath);
+    tempFiles.delete(mdTempPath);
 
     // Verify both files exist after rename (check for non-atomic filesystem issues)
     try {
@@ -224,35 +274,11 @@ async function writeDiscussionFilesAtomically(
   } catch (error) {
     originalError = error;
 
-    // Clean up temp files if they exist
-    // Log cleanup errors separately before throwing original error
-    const cleanupPromises = [
-      fs
-        .unlink(jsonTempPath)
-        .catch((cleanupError) => {
-          cleanupErrors.push({ file: jsonTempPath, error: cleanupError });
-        }),
-      fs
-        .unlink(mdTempPath)
-        .catch((cleanupError) => {
-          cleanupErrors.push({ file: mdTempPath, error: cleanupError });
-        }),
-    ];
+    // Always attempt to cleanup temp files, even if original error occurred
+    // This ensures we don't leave orphaned temp files
+    await cleanupTempFiles();
 
-    await Promise.all(cleanupPromises);
-
-    // Log cleanup errors if any occurred
-    if (cleanupErrors.length > 0) {
-      logger.warn('Failed to cleanup some temp files after error', {
-        cleanupErrors: cleanupErrors.map((e) => ({
-          file: e.file,
-          error: e.error instanceof Error ? e.error.message : String(e.error),
-        })),
-        originalError: originalError instanceof Error ? originalError.message : String(originalError),
-      });
-    }
-
-    // Throw original error
+    // Throw original error after cleanup attempt
     throw originalError;
   }
 }
@@ -273,12 +299,49 @@ async function ensureUserDirectory(userId: string): Promise<string> {
 
 /**
  * Get file paths for a discussion
+ * Includes explicit path traversal validation for security
  */
 function getDiscussionPaths(userId: string, discussionId: string): { json: string; md: string } {
+  // Validate userId and discussionId don't contain path traversal sequences
+  const pathTraversalPatterns = ['..', '/', '\\'];
+  const hasPathTraversal = (value: string): boolean => {
+    return pathTraversalPatterns.some((pattern) => value.includes(pattern));
+  };
+
+  if (hasPathTraversal(userId)) {
+    logger.error('Path traversal attempt detected in userId', { userId });
+    throw new Error('Invalid userId: path traversal sequences are not allowed');
+  }
+
+  if (hasPathTraversal(discussionId)) {
+    logger.error('Path traversal attempt detected in discussionId', { discussionId });
+    throw new Error('Invalid discussionId: path traversal sequences are not allowed');
+  }
+
+  // Build paths using path.join for proper normalization
   const userDir = path.join(DISCUSSIONS_DIR, userId);
+  const jsonPath = path.join(userDir, `${discussionId}.json`);
+  const mdPath = path.join(userDir, `${discussionId}.md`);
+
+  // Verify resolved paths stay within DISCUSSIONS_DIR (defense in depth)
+  const resolvedJsonPath = path.resolve(jsonPath);
+  const resolvedMdPath = path.resolve(mdPath);
+  const resolvedDiscussionsDir = path.resolve(DISCUSSIONS_DIR);
+
+  if (!resolvedJsonPath.startsWith(resolvedDiscussionsDir) || !resolvedMdPath.startsWith(resolvedDiscussionsDir)) {
+    logger.error('Path traversal detected: resolved path outside DISCUSSIONS_DIR', {
+      userId,
+      discussionId,
+      resolvedJsonPath,
+      resolvedMdPath,
+      resolvedDiscussionsDir,
+    });
+    throw new Error('Invalid path: resolved path must stay within discussions directory');
+  }
+
   return {
-    json: path.join(userDir, `${discussionId}.json`),
-    md: path.join(userDir, `${discussionId}.md`),
+    json: jsonPath,
+    md: mdPath,
   };
 }
 
@@ -360,6 +423,12 @@ export async function createDiscussion(
 /**
  * Read discussion data from JSON file
  */
+/**
+ * Read discussion from JSON file
+ * CRITICAL: This loads ALL rounds from the JSON file - the complete discussion history
+ * The JSON file is the source of truth for LLM context and contains all previous rounds
+ * The MD file is for user viewing/deletion in the browser
+ */
 export async function readDiscussion(
   discussionId: string,
   userId: string
@@ -367,6 +436,7 @@ export async function readDiscussion(
   const paths = getDiscussionPaths(userId, discussionId);
 
   try {
+    // CRITICAL: Read ALL rounds from JSON file (source of truth for LLM context)
     const jsonContent = await fs.readFile(paths.json, 'utf-8');
     const data = parseDiscussionJSON(jsonContent);
 
@@ -377,6 +447,7 @@ export async function readDiscussion(
 
     // CRITICAL: Sort rounds by roundNumber after reading to ensure consistent order
     // JSON.parse should preserve array order, but we explicitly sort to be safe
+    // ALL rounds from JSON file are loaded - this is the complete discussion history
     if (data.rounds && data.rounds.length > 0) {
       // Validate rounds are sorted (log warning if not, but don't fail)
       if (!validateRoundsSorted(data.rounds)) {
@@ -388,7 +459,16 @@ export async function readDiscussion(
       }
 
       // Sort rounds explicitly
+      // CRITICAL: ALL rounds from JSON file are preserved - this is the complete history
       data.rounds = sortRoundsByRoundNumber(data.rounds);
+
+      logger.debug('📚 Loaded all rounds from JSON file', {
+        discussionId,
+        userId,
+        totalRounds: data.rounds.length,
+        roundNumbers: data.rounds.map((r) => r.roundNumber),
+        note: 'JSON file contains complete discussion history - all rounds available for LLM context',
+      });
 
       // Validate round number sequence integrity
       const sequenceValidation = validateRoundNumberSequence(data.rounds);
@@ -607,6 +687,9 @@ export async function addRoundToDiscussion(
       moderatorTurn: round.moderatorResponse.turn,
     });
 
+    // CRITICAL: Add round to rounds array - ALL rounds are preserved in JSON file
+    // The JSON file contains the complete discussion history - all rounds are saved here
+    // This ensures LLMs have access to full context of all previous rounds
     data.rounds.push(round);
     // CRITICAL: Sort rounds after adding to maintain order
     data.rounds = sortRoundsByRoundNumber(data.rounds);
@@ -620,6 +703,9 @@ export async function addRoundToDiscussion(
     const paths = getDiscussionPaths(userId, discussionId);
 
     try {
+      // CRITICAL: Save ALL rounds to JSON file (for LLM context) and MD file (for user viewing)
+      // formatDiscussionJSON saves the entire DiscussionData object, including ALL rounds
+      // This ensures the complete discussion history is available for LLM context
       const jsonContent = formatDiscussionJSON(data);
       const mdContent = formatDiscussionMarkdown(data);
 

@@ -284,10 +284,31 @@ export function checkPayloadSize(payload: unknown): boolean {
 }
 
 /**
+ * Clean up expired connection rate limit entries
+ */
+function cleanupExpiredConnectionRateLimits(): void {
+  const now = Date.now();
+  let cleaned = 0;
+
+  for (const [ip, entry] of ipConnectionRate.entries()) {
+    if (now - entry.windowStart >= CONNECTION_RATE_WINDOW_MS) {
+      ipConnectionRate.delete(ip);
+      cleaned += 1;
+    }
+  }
+
+  if (cleaned > 0) {
+    logger.debug('Cleaned up expired connection rate limit entries', { cleaned });
+  }
+}
+
+/**
  * Clean up idle connections
  */
 export function cleanupIdleConnections(io: Server): void {
   const now = Date.now();
+  let cleaned = 0;
+
   for (const [ip, connections] of connectionStore.entries()) {
     for (const connection of connections) {
       if (now - connection.lastActivity > IDLE_TIMEOUT_MS) {
@@ -297,7 +318,72 @@ export function cleanupIdleConnections(io: Server): void {
           idleTime: now - connection.lastActivity,
         });
         io.sockets.sockets.get(connection.socketId)?.disconnect(true);
+        cleaned += 1;
       }
     }
+  }
+
+  if (cleaned > 0) {
+    logger.info('Cleaned up idle connections', { cleaned });
+  }
+}
+
+/**
+ * Get connection statistics
+ */
+export function getConnectionStats(): {
+  totalConnections: number;
+  connectionsByIP: Record<string, number>;
+  idleConnections: number;
+} {
+  const now = Date.now();
+  let totalConnections = 0;
+  let idleConnections = 0;
+  const connectionsByIP: Record<string, number> = {};
+
+  for (const [ip, connections] of connectionStore.entries()) {
+    connectionsByIP[ip] = connections.length;
+    totalConnections += connections.length;
+
+    for (const connection of connections) {
+      if (now - connection.lastActivity > IDLE_TIMEOUT_MS) {
+        idleConnections += 1;
+      }
+    }
+  }
+
+  return {
+    totalConnections,
+    connectionsByIP,
+    idleConnections,
+  };
+}
+
+// Store interval ID for cleanup on shutdown
+let connectionCleanupIntervalId: NodeJS.Timeout | null = null;
+
+/**
+ * Periodic connection cleanup
+ * @returns The interval ID for cleanup purposes
+ */
+export function startPeriodicCleanup(io: Server): NodeJS.Timeout | null {
+  if (typeof setInterval !== 'undefined') {
+    connectionCleanupIntervalId = setInterval(() => {
+      cleanupIdleConnections(io);
+      cleanupExpiredConnectionRateLimits();
+    }, 5 * 60 * 1000); // Every 5 minutes
+    return connectionCleanupIntervalId;
+  }
+  return null;
+}
+
+/**
+ * Stop periodic connection cleanup
+ * Should be called during graceful shutdown
+ */
+export function stopPeriodicCleanup(): void {
+  if (connectionCleanupIntervalId !== null) {
+    clearInterval(connectionCleanupIntervalId);
+    connectionCleanupIntervalId = null;
   }
 }

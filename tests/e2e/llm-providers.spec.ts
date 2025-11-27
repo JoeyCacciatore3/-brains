@@ -1,14 +1,14 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 // Helper function to wait for socket connection
-async function waitForConnection(page: any) {
+async function waitForConnection(page: Page) {
   const connectionIndicator = page.locator('text=/Connected|Connecting|Reconnecting/i');
   await connectionIndicator.waitFor({ timeout: 10000 });
   await page.waitForTimeout(1000);
 }
 
 // Helper function to start a dialogue
-async function startDialogue(page: any, topic: string) {
+async function startDialogue(page: Page, topic: string) {
   const topicInput = page.getByPlaceholder(/Enter a problem to solve/i);
   await topicInput.fill(topic);
 
@@ -18,7 +18,7 @@ async function startDialogue(page: any, topic: string) {
 }
 
 // Helper function to wait for AI responses
-async function waitForAIResponses(page: any, timeout = 30000) {
+async function waitForAIResponses(page: Page, timeout = 30000) {
   // Wait for at least one AI response to appear
   await page.waitForSelector('text=/Solver AI|Analyzer AI|Moderator AI/i', { timeout });
 }
@@ -275,4 +275,3 @@ test.describe('LLM Provider Tests', () => {
     expect(hasContent || true).toBeTruthy(); // Allow test to pass - recovery is tested by continuation
   });
 });
-

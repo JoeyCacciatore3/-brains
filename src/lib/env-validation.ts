@@ -68,6 +68,14 @@ export function validateEnvironment(): ValidationResult {
     errors.push('RATE_LIMIT_WINDOW_MS must be at least 1000 (1 second)');
   }
 
+  // Validate port number if provided
+  if (process.env.PORT) {
+    const port = parseInt(process.env.PORT, 10);
+    if (isNaN(port) || port < 1 || port > 65535) {
+      errors.push('PORT must be a number between 1 and 65535');
+    }
+  }
+
   const valid = errors.length === 0;
 
   return {

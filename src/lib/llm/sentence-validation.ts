@@ -15,6 +15,7 @@
  */
 
 import { logger } from '@/lib/logger';
+import { estimateTokensFromChars } from '@/lib/discussions/token-counter';
 
 /**
  * Check if a response ends with a complete sentence
@@ -56,10 +57,11 @@ export function isSentenceComplete(content: string): boolean {
   // Check if ends with sentence-ending punctuation
   if (lastChar === '.' || lastChar === '!' || lastChar === '?') {
     // Check if it's an abbreviation (common abbreviations that end with period)
-    const commonAbbreviations = [
-      /\b(Dr|Mr|Mrs|Ms|Prof|Sr|Jr|vs|etc|e\.g|i\.e|a\.m|p\.m|U\.S|U\.K|Ph\.D|B\.A|M\.A)\s*$/i,
-      /\b[A-Z]\.\s*$/, // Single capital letter with period (e.g., "A.")
-    ];
+    // Note: commonAbbreviations pattern defined but pattern matching done inline
+    // const commonAbbreviations = [
+    //   /\b(Dr|Mr|Mrs|Ms|Prof|Sr|Jr|vs|etc|e\.g|i\.e|a\.m|p\.m|U\.S|U\.K|Ph\.D|B\.A|M\.A)\s*$/i,
+    //   /\b[A-Z]\.\s*$/, // Single capital letter with period (e.g., "A.")
+    // ];
 
     // If it matches an abbreviation pattern, check if there's more content after
     // For now, we'll consider it complete if it ends with punctuation
@@ -188,8 +190,8 @@ export function validateSentenceCompleteness(
   });
 
   // ENHANCED: Length-based heuristics - responses near token limit are more likely truncated
-  // Rough estimate: 1 token ≈ 4 characters for English text
-  const estimatedTokens = Math.ceil(trimmedLength / 4);
+  // Use standardized token estimation for consistency
+  const estimatedTokens = estimateTokensFromChars(trimmedLength);
   const isNearTokenLimit = maxTokens && estimatedTokens >= maxTokens * 0.9; // Within 90% of limit
 
   if (!isComplete && finishReason !== 'length') {

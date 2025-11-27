@@ -11,6 +11,9 @@ import { logger } from './src/lib/logger';
 import { closeDatabase } from './src/lib/db';
 import { closeRedisClient } from './src/lib/db/redis';
 import { startTempFileCleanup, cleanupOrphanedTempFiles } from './src/lib/discussions/temp-cleanup';
+import { cleanupRateLimitIntervals, clearRateLimitStores } from './src/lib/rate-limit';
+import { stopPeriodicCleanup } from './src/lib/socket/connection-manager';
+import { SERVER_CONFIG, APP_CONFIG, REDIS_CONFIG } from './src/lib/config';
 
 // Load environment variables from .env.local (Next.js convention)
 config({ path: resolve(process.cwd(), '.env.local') });
@@ -19,6 +22,13 @@ config({ path: resolve(process.cwd(), '.env') });
 
 // Validate environment variables before starting server
 validateEnvironmentOrExit();
+
+// Validate configuration and log results
+import('./src/lib/config/validator').then(({ validateAndLogConfiguration }) => {
+  validateAndLogConfiguration();
+}).catch((error) => {
+  logger.warn('Configuration validation failed', { error });
+});
 
 // Initialize database on server startup (async, non-blocking)
 // Use async version but don't block server startup
@@ -32,6 +42,9 @@ validateEnvironmentOrExit();
     logger.error('Server will continue but database operations may fail');
   }
 })();
+
+// Clear rate limit stores on server start (fresh start)
+clearRateLimitStores();
 
 // Start temp file cleanup job
 startTempFileCleanup();
@@ -59,9 +72,16 @@ import('./src/lib/discussions/backup-manager').then(({ schedulePeriodicBackups }
   });
 });
 
-const dev = process.env.NODE_ENV !== 'production';
-const hostname = process.env.HOSTNAME || 'localhost';
-const port = parseInt(process.env.PORT || '3000', 10);
+// Start memory monitoring
+import('./src/lib/memory-manager').then(({ setupMemoryMonitoring }) => {
+  setupMemoryMonitoring();
+}).catch((error) => {
+  logger.error('Failed to start memory monitoring', { error });
+});
+
+const dev = SERVER_CONFIG.NODE_ENV !== 'production';
+const hostname = SERVER_CONFIG.HOSTNAME;
+const port = SERVER_CONFIG.PORT;
 
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
@@ -82,6 +102,18 @@ if (!dev) {
   }
 
   logger.info('Build directory validated');
+}
+
+// Validate production configuration before starting server
+if (!dev) {
+  const appUrl = APP_CONFIG.APP_URL;
+  if (!appUrl || appUrl === 'http://localhost:3000') {
+    logger.error('APP_URL environment variable is required in production', {
+      nodeEnv: SERVER_CONFIG.NODE_ENV,
+      recommendation: 'Set APP_URL to your production domain (e.g., https://yourdomain.com)',
+    });
+    process.exit(1);
+  }
 }
 
 app.prepare().catch((error) => {
@@ -195,13 +227,19 @@ app.prepare().catch((error) => {
     }
 
     // Production: use server-side env variable (not NEXT_PUBLIC_*)
-    const appUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL;
-    if (appUrl) {
-      return [appUrl];
+    // CRITICAL: Fail fast in production if APP_URL is not set
+    const appUrl = APP_CONFIG.APP_URL;
+    if (!appUrl || appUrl === 'http://localhost:3000') {
+      const errorMessage = 'APP_URL environment variable is required in production. Please set APP_URL to your production domain (e.g., https://yourdomain.com)';
+      logger.error(errorMessage, {
+        hostname,
+        port,
+        nodeEnv: SERVER_CONFIG.NODE_ENV,
+      });
+      throw new Error(errorMessage);
     }
 
-    // Fallback
-    return [`http://${hostname}:${port}`];
+    return [appUrl];
   };
 
   const allowedOrigins = getAllowedOrigins();
@@ -228,14 +266,67 @@ app.prepare().catch((error) => {
     },
   });
 
+  // Configure Socket.IO Redis adapter for horizontal scaling
+  (async () => {
+    try {
+      const { getRedisClient } = await import('./src/lib/db/redis');
+      const redis = getRedisClient();
+
+      if (redis) {
+        // Check if Redis URL is available for adapter configuration
+        const redisUrl = REDIS_CONFIG.REDIS_URL;
+        const redisHost = REDIS_CONFIG.REDIS_HOST;
+        const redisPort = REDIS_CONFIG.REDIS_PORT;
+        const redisPassword = REDIS_CONFIG.REDIS_PASSWORD;
+
+        if (redisUrl || redisHost) {
+          try {
+            const { createAdapter } = await import('@socket.io/redis-adapter');
+            const { createClient } = await import('redis');
+
+            // Create pub/sub clients for the adapter
+            const pubClient = createClient({
+              url: redisUrl || `redis://${redisHost}:${redisPort}`,
+              password: redisPassword || undefined,
+            });
+
+            const subClient = pubClient.duplicate();
+
+            // Connect both clients
+            await Promise.all([pubClient.connect(), subClient.connect()]);
+
+            // Set up error handlers
+            pubClient.on('error', (err: Error) => {
+              logger.error('Socket.IO Redis pub client error', { error: err });
+            });
+
+            subClient.on('error', (err: Error) => {
+              logger.error('Socket.IO Redis sub client error', { error: err });
+            });
+
+            // Configure the adapter
+            io.adapter(createAdapter(pubClient, subClient));
+            logger.info('Socket.IO Redis adapter configured successfully');
+          } catch (error) {
+            logger.warn('Failed to configure Socket.IO Redis adapter, continuing without it', {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      }
+    } catch (error) {
+      logger.warn('Failed to setup Socket.IO Redis adapter, continuing without it', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  })();
+
   // Setup Socket.IO handlers with connection management
   setupSocketHandlers(io);
 
   // Start periodic cleanup of idle connections
-  import('./src/lib/socket/connection-manager').then(({ cleanupIdleConnections }) => {
-    setInterval(() => {
-      cleanupIdleConnections(io);
-    }, 60000); // Check every minute
+  import('./src/lib/socket/connection-manager').then(({ startPeriodicCleanup }) => {
+    startPeriodicCleanup(io);
   });
 
   // Graceful shutdown handlers
@@ -249,6 +340,14 @@ app.prepare().catch((error) => {
       // Close Socket.IO server
       io.close(() => {
         logger.info('Socket.IO server closed');
+
+        // Stop connection cleanup interval
+        stopPeriodicCleanup();
+        logger.info('Connection cleanup stopped');
+
+        // Stop rate limit cleanup intervals
+        cleanupRateLimitIntervals();
+        logger.info('Rate limit cleanup stopped');
 
         // Close database connections
         closeDatabase();
@@ -283,7 +382,7 @@ app.prepare().catch((error) => {
       logger.info(`Server ready on http://${hostname}:${port}`, {
         hostname,
         port,
-        env: process.env.NODE_ENV,
+        env: SERVER_CONFIG.NODE_ENV,
       });
 
       // Automatically open browser in development mode

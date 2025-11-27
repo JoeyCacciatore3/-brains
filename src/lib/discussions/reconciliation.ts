@@ -36,7 +36,7 @@ export async function reconcileDiscussion(
     const fileData = await readDiscussion(discussionId, userId);
 
     // Get database record
-    const dbRecord = getDiscussion(discussionId);
+    const dbRecord = getDiscussion(discussionId, userId);
 
     if (!dbRecord) {
       result.issues.push('Discussion not found in database');
@@ -55,7 +55,8 @@ export async function reconcileDiscussion(
           return (
             sum +
             countTokens(round.solverResponse.content) +
-            countTokens(round.analyzerResponse.content)
+            countTokens(round.analyzerResponse.content) +
+            countTokens(round.moderatorResponse.content)
           );
         }, 0);
       }
@@ -64,7 +65,8 @@ export async function reconcileDiscussion(
         return (
           sum +
           countTokens(round.solverResponse.content) +
-          countTokens(round.analyzerResponse.content)
+          countTokens(round.analyzerResponse.content) +
+          countTokens(round.moderatorResponse.content)
         );
       }, 0);
     }
@@ -227,6 +229,114 @@ export async function reconcileAllDiscussions(): Promise<{
     };
   } catch (error) {
     logger.error('Failed to reconcile all discussions', { error });
+    throw error;
+  }
+}
+
+/**
+ * Validate token count sync between file and database
+ * Returns true if in sync, false if mismatch detected
+ * Optionally auto-repairs if mismatch is small (< 5% difference)
+ */
+export async function validateTokenCountSync(
+  discussionId: string,
+  userId: string,
+  options?: { autoRepair?: boolean; tolerancePercent?: number }
+): Promise<{
+  inSync: boolean;
+  fileTokenCount: number;
+  dbTokenCount: number;
+  difference: number;
+  differencePercent: number;
+  repaired?: boolean;
+}> {
+  const autoRepair = options?.autoRepair ?? false;
+  const tolerancePercent = options?.tolerancePercent ?? 5;
+
+  try {
+    // Read from file (source of truth)
+    const fileData = await readDiscussion(discussionId, userId);
+    const dbRecord = getDiscussion(discussionId, userId);
+
+    if (!dbRecord) {
+      throw new Error('Discussion not found in database');
+    }
+
+    // Calculate token count from file (same logic as reconcileDiscussion)
+    let fileTokenCount = 0;
+    if (fileData.currentSummary) {
+      fileTokenCount += countTokens(fileData.currentSummary.summary);
+      if (fileData.rounds) {
+        const summaryRound = fileData.currentSummary.roundNumber;
+        const roundsAfterSummary = fileData.rounds.filter((r) => r.roundNumber > summaryRound);
+        fileTokenCount += roundsAfterSummary.reduce((sum, round) => {
+          return (
+            sum +
+            countTokens(round.solverResponse.content) +
+            countTokens(round.analyzerResponse.content) +
+            countTokens(round.moderatorResponse.content)
+          );
+        }, 0);
+      }
+    } else if (fileData.rounds && fileData.rounds.length > 0) {
+      fileTokenCount = fileData.rounds.reduce((sum, round) => {
+        return (
+          sum +
+          countTokens(round.solverResponse.content) +
+          countTokens(round.analyzerResponse.content) +
+          countTokens(round.moderatorResponse.content)
+        );
+      }, 0);
+    }
+
+    const dbTokenCount = dbRecord.token_count;
+    const difference = Math.abs(fileTokenCount - dbTokenCount);
+    const differencePercent =
+      dbTokenCount > 0 ? (difference / dbTokenCount) * 100 : fileTokenCount > 0 ? 100 : 0;
+
+    const inSync = differencePercent < tolerancePercent;
+
+    let repaired = false;
+    if (!inSync && autoRepair) {
+      // Auto-repair if mismatch is small
+      updateDiscussion(discussionId, {
+        token_count: fileTokenCount,
+      });
+      repaired = true;
+      logger.info('Auto-repaired token count sync', {
+        discussionId,
+        userId,
+        oldTokenCount: dbTokenCount,
+        newTokenCount: fileTokenCount,
+        difference,
+        differencePercent,
+      });
+    } else if (!inSync) {
+      logger.warn('Token count sync mismatch detected', {
+        discussionId,
+        userId,
+        fileTokenCount,
+        dbTokenCount,
+        difference,
+        differencePercent,
+        autoRepairEnabled: autoRepair,
+      });
+    }
+
+    return {
+      inSync,
+      fileTokenCount,
+      dbTokenCount,
+      difference,
+      differencePercent,
+      repaired: repaired || undefined,
+    };
+  } catch (error) {
+    logger.error('Failed to validate token count sync', {
+      discussionId,
+      userId,
+      error,
+    });
     throw error;
   }
 }

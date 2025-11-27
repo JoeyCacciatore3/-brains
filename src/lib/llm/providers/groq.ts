@@ -4,6 +4,7 @@ import { LLM_CONFIG } from '@/lib/config';
 import { SSEParser } from '@/lib/llm/sse-parser';
 import { ErrorCode } from '@/lib/errors';
 import { BaseProvider, type StreamResult } from './base-provider';
+import { estimateTokensFromChars } from '@/lib/discussions/token-counter';
 
 interface ErrorWithCode extends Error {
   code?: ErrorCode;
@@ -181,7 +182,7 @@ export class GroqProvider extends BaseProvider implements LLMProvider {
       }
 
       // CRITICAL: Log finish_reason with full context for debugging
-      const estimatedTokens = Math.ceil(fullContent.trim().length / 4);
+      const estimatedTokens = estimateTokensFromChars(fullContent.trim().length);
       logger.info('🔍 GROQ RESPONSE COMPLETE: API streaming finished', {
         provider: 'Groq',
         finishReason,

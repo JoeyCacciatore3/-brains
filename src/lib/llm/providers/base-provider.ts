@@ -7,7 +7,8 @@
 import type { LLMMessage } from '@/lib/llm/types';
 import { logger } from '@/lib/logger';
 import { validateSentenceCompleteness } from '@/lib/llm/sentence-validation';
-import { LLM_CONFIG } from '@/lib/config';
+// Note: LLM_CONFIG imported but not used directly (used via estimateTokensFromChars)
+import { estimateTokensFromChars } from '@/lib/discussions/token-counter';
 
 export interface StreamResult {
   content: string;
@@ -51,8 +52,8 @@ export abstract class BaseProvider {
     const needsCompletion = this.shouldComplete(fullContent, finishReason);
 
     // PHASE 1: DIAGNOSTIC LOGGING - Consistent token estimation
-    // Use 3.5 chars per token for consistency with shouldComplete() logic
-    const estimatedTokens = Math.ceil(fullContent.trim().length / 3.5);
+    // Use standardized token estimation for consistency
+    const estimatedTokens = estimateTokensFromChars(fullContent.trim().length);
     const isNearTokenLimit = this.config.maxTokens && estimatedTokens >= this.config.maxTokens * 0.85;
     logger.info('🔍 COMPLETION DECISION: Checking if response needs completion', {
       provider: this.constructor.name,
@@ -96,7 +97,7 @@ export abstract class BaseProvider {
           initialLength: fullContent.length - continuation.length,
           totalLength: fullContent.length,
           totalTrimmedLength: fullContent.trim().length,
-          finalEstimatedTokens: Math.ceil(fullContent.trim().length / 3.5),
+          finalEstimatedTokens: estimateTokensFromChars(fullContent.trim().length),
           onChunkProvided: !!onChunk,
           timestamp: new Date().toISOString(),
         });
@@ -169,8 +170,8 @@ export abstract class BaseProvider {
     );
 
     // PHASE 3: COMPLETION LOGIC FIX - More accurate token estimation
-    // Use consistent estimation: ~3.5 chars per token for English text (matches expectedLengthFromTokens calculation)
-    const estimatedTokens = Math.ceil(trimmedLength / 3.5);
+    // Use standardized token estimation for consistency
+    const estimatedTokens = estimateTokensFromChars(trimmedLength);
     // Lower threshold to 55% to catch truncation earlier, accounting for estimation inaccuracy
     const isNearTokenLimit = this.config.maxTokens && estimatedTokens >= this.config.maxTokens * 0.55;
 
@@ -210,7 +211,7 @@ export abstract class BaseProvider {
     // PHASE 3: COMPLETION LOGIC FIX - More accurate expected length from tokens
     // If we have 2000 max tokens, we should get ~7000 chars for a full response (3.5 chars/token)
     // If response is <50% of expected length and doesn't end properly, it's likely truncated
-    const expectedLengthFromTokens = this.config.maxTokens * 3.5; // ~3.5 chars per token on average
+    const expectedLengthFromTokens = this.config.maxTokens * 3.5; // Use standardized estimation constant
     const isMuchShorterThanExpected =
       this.config.maxTokens &&
       trimmedLength < expectedLengthFromTokens * 0.5 &&

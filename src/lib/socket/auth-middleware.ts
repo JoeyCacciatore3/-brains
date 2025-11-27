@@ -74,16 +74,48 @@ async function getSessionFromSocket(socket: Socket): Promise<{ user?: SocketUser
 
     // Get NextAuth secret
     const secret = process.env.NEXTAUTH_SECRET;
-    if (!secret || secret === 'development-secret-change-in-production') {
-      // In production, we should have a proper secret
-      if (process.env.NODE_ENV === 'production') {
-        logger.warn('NEXTAUTH_SECRET not properly configured in production', {
+    const isProduction = process.env.NODE_ENV === 'production';
+
+    // Validate secret strength
+    if (!secret) {
+      if (isProduction) {
+        logger.warn('NEXTAUTH_SECRET not configured in production', {
           socketId: socket.id,
         });
         return null;
       }
       // In development, allow anonymous connections
       return null;
+    }
+
+    // Validate secret meets minimum security requirements
+    // Minimum length: 32 characters (recommended for production)
+    // Should contain mixed alphanumeric and special characters
+    const MIN_SECRET_LENGTH = 32;
+    const hasMinLength = secret.length >= MIN_SECRET_LENGTH;
+    const hasAlphanumeric = /[a-zA-Z0-9]/.test(secret);
+    const hasSpecialChars = /[^a-zA-Z0-9]/.test(secret);
+    const isWeakSecret = secret === 'development-secret-change-in-production' ||
+                        secret.length < MIN_SECRET_LENGTH ||
+                        (!hasAlphanumeric || !hasSpecialChars);
+
+    if (isWeakSecret) {
+      if (isProduction) {
+        logger.warn('NEXTAUTH_SECRET does not meet production security standards', {
+          socketId: socket.id,
+          secretLength: secret.length,
+          hasAlphanumeric,
+          hasSpecialChars,
+          recommendation: 'Use a strong random secret (32+ chars, mixed alphanumeric + special chars). Generate with: openssl rand -base64 32',
+        });
+        return null;
+      }
+      // In development, log warning but allow (for development convenience)
+      if (secret === 'development-secret-change-in-production' || secret.length < MIN_SECRET_LENGTH) {
+        logger.debug('Using weak NEXTAUTH_SECRET in development (not recommended for production)', {
+          socketId: socket.id,
+        });
+      }
     }
 
     // Decode and verify JWT token

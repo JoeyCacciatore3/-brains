@@ -1,11 +1,33 @@
 'use client';
 
+import { useState } from 'react';
 import { FileText, Trash2 } from 'lucide-react';
 
 interface InitialTopicDisplayProps {
   topic: string;
   discussionId: string | null;
   onDelete?: () => void;
+}
+
+// Simple tooltip component
+function Tooltip({ text, children }: { text: string; children: React.ReactNode }) {
+  const [show, setShow] = useState(false);
+
+  return (
+    <div
+      className="relative inline-block"
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+    >
+      {children}
+      {show && (
+        <div className="absolute bottom-full right-0 mb-2 px-3 py-2 bg-black text-white text-xs rounded shadow-lg z-50 whitespace-nowrap border-2 border-red-500">
+          {text}
+          <div className="absolute top-full right-4 -mt-1 border-4 border-transparent border-t-black"></div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function InitialTopicDisplay({ topic, discussionId, onDelete }: InitialTopicDisplayProps) {
@@ -17,14 +39,17 @@ export function InitialTopicDisplay({ topic, discussionId, onDelete }: InitialTo
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-gray-300 font-semibold text-sm">Initial Topic</h3>
             {discussionId && onDelete && (
-              <button
-                onClick={onDelete}
-                className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-500/20 rounded transition-colors"
-                title="Delete discussion"
-                aria-label="Delete discussion"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
+              <Tooltip text="Delete this discussion permanently">
+                <button
+                  onClick={onDelete}
+                  className="px-3 py-1.5 flex items-center gap-2 text-red-400 hover:text-red-300 hover:bg-red-500/20 rounded-lg transition-all border border-red-500/30 hover:border-red-500/60"
+                  title="Delete discussion"
+                  aria-label="Delete discussion"
+                >
+                  <Trash2 className="w-5 h-5" />
+                  <span className="text-sm font-medium">Delete</span>
+                </button>
+              </Tooltip>
             )}
           </div>
           <p className="text-white text-sm whitespace-pre-wrap">{topic}</p>

@@ -204,94 +204,25 @@ export function getRoundNumberFromTurnNumber(turnNumber: number): number {
 
 /**
  * Filter rounds for a specific persona's context
- * CRITICAL: This ensures Analyzer never sees incomplete rounds with Solver responses
  *
- * Rules:
- * - Analyzer: Only sees complete rounds (all 3 responses) to prevent seeing future Solver responses
- * - Solver/Moderator: Can see incomplete rounds in current round (for context during processing)
+ * IMPORTANT: ALL LLMs see ALL previous rounds AND the current round.
+ * Execution order (Analyzer → Solver → Moderator) is ONLY for generating intelligent discussion,
+ * it does NOT affect what context each LLM can see.
+ *
+ * This function now returns all rounds for all personas. The personaName parameter is kept
+ * for backward compatibility but no longer affects filtering.
  *
  * @param rounds - All rounds from discussion context
- * @param personaName - The persona requesting context ('Analyzer AI', 'Solver AI', or 'Moderator AI')
- * @param currentRoundNumber - The current round being processed (for Solver/Moderator to see incomplete current round)
- * @returns Filtered rounds appropriate for the persona's context
+ * @param personaName - The persona requesting context (kept for backward compatibility, no longer affects filtering)
+ * @param currentRoundNumber - The current round being processed (kept for backward compatibility, no longer affects filtering)
+ * @returns All rounds (no filtering based on persona)
  */
 export function filterRoundsForPersona(
   rounds: DiscussionRound[],
   personaName: 'Analyzer AI' | 'Solver AI' | 'Moderator AI',
   currentRoundNumber?: number
 ): DiscussionRound[] {
-  if (personaName === 'Analyzer AI') {
-    // CRITICAL: Analyzer should ONLY see complete rounds
-    // This prevents Analyzer from seeing Solver responses from incomplete rounds
-
-    // CRITICAL AUDIT: Also exclude current round entirely (even if complete)
-    // Analyzer should never see the current round it's about to create
-    let filtered = filterCompleteRounds(rounds);
-
-    // Remove current round if it exists (shouldn't, but safety check)
-    if (currentRoundNumber !== undefined) {
-      const beforeCount = filtered.length;
-      filtered = filtered.filter((r) => r.roundNumber !== currentRoundNumber);
-      if (filtered.length < beforeCount) {
-        logger.warn('🚨 CRITICAL: Current round was in context for Analyzer - removed it', {
-          currentRoundNumber,
-          removedRoundNumber: currentRoundNumber,
-          note: 'Analyzer should never see current round - this indicates a bug',
-        });
-      }
-    }
-
-    if (filtered.length !== rounds.length) {
-      const incompleteCount = rounds.length - filtered.length;
-      logger.info('🔍 Context filtering: Filtered incomplete rounds for Analyzer', {
-        originalRoundsCount: rounds.length,
-        filteredRoundsCount: filtered.length,
-        incompleteRoundsFiltered: incompleteCount,
-        currentRoundExcluded: currentRoundNumber !== undefined,
-        note: 'Analyzer must only see complete rounds to prevent context contamination',
-      });
-    }
-
-    // CRITICAL AUDIT: Verify Analyzer sees complete rounds with all three responses (including Solver)
-    // This confirms Analyzer can see Solver responses WITHIN complete rounds (which is correct)
-    if (filtered.length > 0) {
-      const completeRoundsWithSolver = filtered.filter((r) =>
-        r.solverResponse?.content?.trim() &&
-        r.analyzerResponse?.content?.trim() &&
-        r.moderatorResponse?.content?.trim()
-      );
-      logger.info('✅ AUDIT: Analyzer context includes complete rounds with all three responses', {
-        currentRoundNumber,
-        completeRoundsCount: filtered.length,
-        roundsWithAllThreeResponses: completeRoundsWithSolver.length,
-        roundNumbers: filtered.map((r) => r.roundNumber),
-        sampleRound: filtered.length > 0 ? {
-          roundNumber: filtered[filtered.length - 1].roundNumber,
-          hasAnalyzer: !!filtered[filtered.length - 1].analyzerResponse?.content?.trim(),
-          hasSolver: !!filtered[filtered.length - 1].solverResponse?.content?.trim(),
-          hasModerator: !!filtered[filtered.length - 1].moderatorResponse?.content?.trim(),
-          solverContentPreview: filtered[filtered.length - 1].solverResponse?.content?.substring(0, 50),
-          note: 'Analyzer correctly sees Solver responses within complete rounds',
-        } : null,
-      });
-    }
-
-    return filtered;
-  } else {
-    // Solver and Moderator can see incomplete rounds in the current round
-    // Filter out incomplete rounds from previous rounds, but keep current round if incomplete
-    return rounds.filter((round) => {
-      if (isRoundComplete(round) || isRoundEmpty(round)) {
-        return true; // Include complete or empty rounds
-      }
-
-      // Include incomplete round only if it's the current round being processed
-      if (currentRoundNumber !== undefined && round.roundNumber === currentRoundNumber) {
-        return true; // Solver/Moderator can see incomplete current round
-      }
-
-      // Exclude incomplete rounds from previous rounds
-      return false;
-    });
-  }
+  // ALL LLMs see ALL rounds - no filtering based on persona
+  // Execution order is enforced separately and does not affect context visibility
+  return rounds;
 }

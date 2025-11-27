@@ -264,7 +264,11 @@ describe('Socket Handlers LLM Integration', () => {
   describe('Resolution Detection Integration', () => {
     it('should detect resolution in conversation', async () => {
       const { isResolved } = await import('@/lib/llm/resolver');
-      vi.mocked(isResolved).mockReturnValue(true);
+      vi.mocked(isResolved).mockReturnValue({
+        resolved: true,
+        confidence: 0.8,
+        reason: 'keywords',
+      });
 
       const messages = [
         {
@@ -278,7 +282,7 @@ describe('Socket Handlers LLM Integration', () => {
       ];
 
       const resolved = isResolved(messages as any);
-      expect(resolved).toBe(true);
+      expect(resolved.resolved).toBe(true);
     });
 
     it('should detect user input needed', async () => {

@@ -3,12 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "tsx server.ts",
+    "dev": "NODE_OPTIONS=\"--expose-gc --max-old-space-size=512\" tsx server.ts",
     "dev:clean": "npm run clean && npm run dev",
     "clean": "rm -rf .next node_modules/.cache",
     "pre-build-check": "node scripts/pre-build-check.js",
     "build": "npm run pre-build-check && next build",
-    "start": "NODE_ENV=production tsx server.ts",
+    "start": "NODE_ENV=production NODE_OPTIONS=\"--expose-gc --max-old-space-size=512\" tsx server.ts",
     "lint": "eslint . --ext .ts,.tsx --max-warnings 0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -34,6 +34,8 @@
     "react-hot-toast": "^2.6.0",
     "socket.io": "^4.7.0",
     "socket.io-client": "^4.7.0",
+    "@socket.io/redis-adapter": "^8.2.0",
+    "redis": "^4.6.0",
     "tailwind-merge": "^3.4.0",
     "tiktoken": "^1.0.22",
     "winston": "^3.18.3",
@@ -47,10 +49,14 @@
     "@types/node": "^24.10.1",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
     "@vitejs/plugin-react": "^5.1.1",
     "autoprefixer": "^10.4.17",
     "eslint": "^8.57.0",
     "eslint-config-next": "^16.0.3",
+    "eslint-plugin-react": "^7.33.2",
+    "eslint-plugin-react-hooks": "^4.6.0",
     "husky": "^8.0.3",
     "jsdom": "^27.2.0",
     "open": "^10.1.0",
@@ -62,7 +68,7 @@
     "vitest": "^4.0.12"
   },
   "engines": {
-    "node": ">=20.9.0",
+    "node": ">=20.18.0",
     "npm": ">=10.0.0"
   }
 }

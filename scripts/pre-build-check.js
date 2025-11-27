@@ -29,7 +29,7 @@ console.log('Running pre-build checks...\n');
 const nodeVersion = process.version;
 const majorVersion = parseInt(nodeVersion.slice(1).split('.')[0], 10);
 if (majorVersion < 20) {
-  error(`Node.js version ${nodeVersion} is too old. Required: >=20.9.0`);
+  error(`Node.js version ${nodeVersion} is too old. Required: >=20.18.0`);
 } else {
   success(`Node.js version ${nodeVersion} is compatible`);
 }

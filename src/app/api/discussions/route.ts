@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@/lib/auth/config';
+import { getAuthSession } from '@/lib/auth/config';
 import {
   getUserDiscussions,
   deleteAllUserDiscussions,
@@ -16,29 +16,30 @@ export const runtime = 'nodejs';
 
 export async function GET(request: NextRequest) {
   try {
-    // Check rate limit
-    const rateLimitCheck = await checkRateLimitWithHeaders(request);
+    // NextAuth v5 in Next.js 16 reads from request context automatically
+    const session = await getAuthSession();
+
+    // Check rate limit with tier based on session
+    const userId = session?.user?.email ? getUserByEmail(session.user.email)?.id : undefined;
+    const rateLimitCheck = await checkRateLimitWithHeaders(request, session, userId);
     if (rateLimitCheck.exceeded && rateLimitCheck.response) {
       return rateLimitCheck.response;
     }
 
-    // NextAuth v5 in Next.js 16 reads from request context automatically
-    // Type assertion needed due to NextAuth v5 beta type definitions
-    const session = await (auth as any)();
     if (!session?.user?.email) {
       const response = NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-      return addRateLimitHeaders(response, getClientIP(request));
+      return addRateLimitHeaders(response, getClientIP(request), rateLimitCheck.tier || 'anonymous');
     }
 
     const user = getUserByEmail(session.user.email);
     if (!user) {
       const response = NextResponse.json({ error: 'User not found' }, { status: 404 });
-      return addRateLimitHeaders(response, getClientIP(request));
+      return addRateLimitHeaders(response, getClientIP(request), rateLimitCheck.tier || 'anonymous');
     }
 
     const discussions = getUserDiscussions(user.id);
     const response = NextResponse.json({ discussions });
-    return addRateLimitHeaders(response, getClientIP(request));
+    return addRateLimitHeaders(response, getClientIP(request), rateLimitCheck.tier || 'anonymous');
   } catch (error) {
     logger.error('Error fetching discussions:', { error });
     const response = NextResponse.json({ error: 'Failed to fetch discussions' }, { status: 500 });
@@ -51,24 +52,25 @@ export async function GET(request: NextRequest) {
  */
 export async function DELETE(request: NextRequest) {
   try {
-    // Check rate limit
-    const rateLimitCheck = await checkRateLimitWithHeaders(request);
+    // NextAuth v5 in Next.js 16 reads from request context automatically
+    const session = await getAuthSession();
+
+    // Check rate limit with tier based on session
+    const userId = session?.user?.email ? getUserByEmail(session.user.email)?.id : undefined;
+    const rateLimitCheck = await checkRateLimitWithHeaders(request, session, userId);
     if (rateLimitCheck.exceeded && rateLimitCheck.response) {
       return rateLimitCheck.response;
     }
 
-    // NextAuth v5 in Next.js 16 reads from request context automatically
-    // Type assertion needed due to NextAuth v5 beta type definitions
-    const session = await (auth as any)();
     if (!session?.user?.email) {
       const response = NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-      return addRateLimitHeaders(response, getClientIP(request));
+      return addRateLimitHeaders(response, getClientIP(request), rateLimitCheck.tier || 'anonymous');
     }
 
     const user = getUserByEmail(session.user.email);
     if (!user) {
       const response = NextResponse.json({ error: 'User not found' }, { status: 404 });
-      return addRateLimitHeaders(response, getClientIP(request));
+      return addRateLimitHeaders(response, getClientIP(request), rateLimitCheck.tier || 'anonymous');
     }
 
     // Parse query parameters to determine action
@@ -83,7 +85,7 @@ export async function DELETE(request: NextRequest) {
         action: 'resolve',
         resolvedCount,
       });
-      return addRateLimitHeaders(response, getClientIP(request));
+      return addRateLimitHeaders(response, getClientIP(request), rateLimitCheck.tier || 'anonymous');
     } else {
       // Delete all discussions (default action)
       // Delete files first, then database entries
@@ -106,7 +108,7 @@ export async function DELETE(request: NextRequest) {
         discussionsDeleted,
         filesDeleted,
       });
-      return addRateLimitHeaders(response, getClientIP(request));
+      return addRateLimitHeaders(response, getClientIP(request), rateLimitCheck.tier || 'anonymous');
     }
   } catch (error) {
     logger.error('Error in DELETE /api/discussions:', { error });

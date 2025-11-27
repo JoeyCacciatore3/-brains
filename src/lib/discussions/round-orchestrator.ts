@@ -5,7 +5,8 @@
  */
 
 import type { Server } from 'socket.io';
-import type { DiscussionRound, FileData } from '@/types';
+import type { DiscussionRound, ConversationMessage } from '@/types';
+import type { FileData } from '@/lib/validation';
 import { logger } from '@/lib/logger';
 import { loadDiscussionContext } from '@/lib/discussion-context';
 import { generateAIResponse } from '@/lib/socket/handlers';
@@ -15,8 +16,6 @@ import {
   validateFinalRound,
   validateRoundState,
   getNextPersona,
-  validatePersonaOrderInStateMachine,
-  transitionToNextState,
   type RoundStateContext,
 } from './round-processor';
 import { calculateTurnNumber, filterRoundsForPersona } from './round-utils';
@@ -117,19 +116,15 @@ export async function executeRound(config: RoundConfig): Promise<RoundResult> {
       throw new Error(`Invalid Analyzer persona: ${analyzerPersona?.name || 'null'}`);
     }
 
-    // CRITICAL FIX: Filter context for Analyzer to exclude incomplete rounds
-    // This prevents Analyzer from seeing Solver responses from incomplete rounds
-    const filteredContextForAnalyzer = {
-      ...discussionContext,
-      rounds: filterRoundsForPersona(discussionContext.rounds || [], 'Analyzer AI', currentRoundNumber),
-    };
+    // ALL LLMs see ALL rounds - no filtering needed
+    // Execution order is enforced separately and does not affect context visibility
+    const contextForAnalyzer = discussionContext;
 
-    logger.info('🔍 Context filtered for Analyzer', {
+    logger.info('🔍 Context prepared for Analyzer', {
       discussionId,
       roundNumber: currentRoundNumber,
-      originalRoundsCount: discussionContext.rounds?.length || 0,
-      filteredRoundsCount: filteredContextForAnalyzer.rounds.length,
-      filteredOut: (discussionContext.rounds?.length || 0) - filteredContextForAnalyzer.rounds.length,
+      roundsCount: contextForAnalyzer.rounds?.length || 0,
+      note: 'All LLMs see all rounds - no filtering applied',
     });
 
     const analyzerResponse = await generateAIResponse(
@@ -137,7 +132,7 @@ export async function executeRound(config: RoundConfig): Promise<RoundResult> {
       discussionId,
       analyzerPersona,
       topic,
-      filteredContextForAnalyzer, // Use filtered context
+      contextForAnalyzer, // All LLMs see all rounds
       isFirstRound,
       files,
       currentRoundNumber,
@@ -177,6 +172,22 @@ export async function executeRound(config: RoundConfig): Promise<RoundResult> {
     }
 
     // Update context to include Analyzer's response for Solver
+    const solverResponsePlaceholder: ConversationMessage = {
+      discussion_id: discussionId,
+      persona: 'Solver AI',
+      content: '',
+      turn: calculateTurnNumber(currentRoundNumber, 'Solver AI'),
+      timestamp: new Date().toISOString(),
+      created_at: Date.now(),
+    };
+    const moderatorResponsePlaceholder: ConversationMessage = {
+      discussion_id: discussionId,
+      persona: 'Moderator AI',
+      content: '',
+      turn: calculateTurnNumber(currentRoundNumber, 'Moderator AI'),
+      timestamp: new Date().toISOString(),
+      created_at: Date.now(),
+    };
     const contextWithAnalyzer = {
       ...discussionContext,
       rounds: [
@@ -184,24 +195,10 @@ export async function executeRound(config: RoundConfig): Promise<RoundResult> {
         {
           roundNumber: currentRoundNumber,
           analyzerResponse: context.analyzerResponse!,
-          solverResponse: {
-            discussion_id: discussionId,
-            persona: 'Solver AI',
-            content: '',
-            turn: calculateTurnNumber(currentRoundNumber, 'Solver AI'),
-            timestamp: new Date().toISOString(),
-            created_at: Date.now(),
-          },
-          moderatorResponse: {
-            discussion_id: discussionId,
-            persona: 'Moderator AI',
-            content: '',
-            turn: calculateTurnNumber(currentRoundNumber, 'Moderator AI'),
-            timestamp: new Date().toISOString(),
-            created_at: Date.now(),
-          },
+          solverResponse: solverResponsePlaceholder,
+          moderatorResponse: moderatorResponsePlaceholder,
           timestamp: new Date().toISOString(),
-        },
+        } as DiscussionRound,
       ],
     };
 
@@ -250,6 +247,14 @@ export async function executeRound(config: RoundConfig): Promise<RoundResult> {
     }
 
     // Update context to include Analyzer's and Solver's responses for Moderator
+    const moderatorResponsePlaceholder2: ConversationMessage = {
+      discussion_id: discussionId,
+      persona: 'Moderator AI',
+      content: '',
+      turn: calculateTurnNumber(currentRoundNumber, 'Moderator AI'),
+      timestamp: new Date().toISOString(),
+      created_at: Date.now(),
+    };
     const contextWithBoth = {
       ...discussionContext,
       rounds: [
@@ -258,16 +263,9 @@ export async function executeRound(config: RoundConfig): Promise<RoundResult> {
           roundNumber: currentRoundNumber,
           analyzerResponse: context.analyzerResponse!,
           solverResponse: context.solverResponse!,
-          moderatorResponse: {
-            discussion_id: discussionId,
-            persona: 'Moderator AI',
-            content: '',
-            turn: calculateTurnNumber(currentRoundNumber, 'Moderator AI'),
-            timestamp: new Date().toISOString(),
-            created_at: Date.now(),
-          },
+          moderatorResponse: moderatorResponsePlaceholder2,
           timestamp: new Date().toISOString(),
-        },
+        } as DiscussionRound,
       ],
     };
 

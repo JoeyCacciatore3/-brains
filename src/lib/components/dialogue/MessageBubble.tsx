@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { HelpCircle } from 'lucide-react';
 import type { ConversationMessage, StreamingMode } from '@/types';
 import { cn } from '@/lib/utils';
+import { clientLogger } from '@/lib/client-logger';
 
 interface MessageBubbleProps {
   message: ConversationMessage;
@@ -11,6 +12,8 @@ interface MessageBubbleProps {
   streamingMode?: StreamingMode;
   isStreaming?: boolean;
 }
+
+  // DOMPurify type definitions (moved inside component to avoid duplicate declaration)
 
 export function MessageBubble({
   message,
@@ -30,6 +33,16 @@ export function MessageBubble({
     sanitize: (dirty: string, config?: DOMPurifyConfig) => string;
   }
 
+  // Type guard for DOMPurify instance
+  function isDOMPurifyInstance(obj: unknown): obj is DOMPurifyInstance {
+    return (
+      typeof obj === 'object' &&
+      obj !== null &&
+      'sanitize' in obj &&
+      typeof (obj as { sanitize: unknown }).sanitize === 'function'
+    );
+  }
+
   // Store DOMPurify instance in state (loaded dynamically on client side only)
   const [domPurify, setDomPurify] = useState<DOMPurifyInstance | null>(null);
 
@@ -40,35 +53,32 @@ export function MessageBubble({
       import('isomorphic-dompurify')
         .then((module) => {
           try {
-            // isomorphic-dompurify exports createDOMPurify as default
-            const createDOMPurify = module.default;
-            let instance: DOMPurifyInstance;
+            // isomorphic-dompurify exports DOMPurify directly as a function with sanitize method
+            // The module itself IS the DOMPurify instance (not module.default)
+            const domPurify = module.default || module;
 
-            // Check if it's a function (factory) or already an instance
-            if (typeof createDOMPurify === 'function') {
-              // Call the factory function to get the instance
-              instance = createDOMPurify() as DOMPurifyInstance;
-            } else if (createDOMPurify && typeof createDOMPurify.sanitize === 'function') {
-              // Already an instance with sanitize method
-              instance = createDOMPurify as DOMPurifyInstance;
+            // DOMPurify is a function that also has a sanitize method
+            if (domPurify && typeof domPurify.sanitize === 'function') {
+              setDomPurify(domPurify as DOMPurifyInstance);
             } else {
-              console.error('Unexpected DOMPurify module structure:', createDOMPurify);
-              return; // Don't set state, will use fallback
-            }
-
-            // Verify it has sanitize method before setting
-            if (instance && typeof instance.sanitize === 'function') {
-              setDomPurify(instance);
-            } else {
-              console.error('DOMPurify instance does not have sanitize method:', instance);
+              clientLogger.error('DOMPurify does not have sanitize method', {
+                moduleType: typeof domPurify,
+                hasDefault: !!module.default,
+                hasSanitize: typeof domPurify?.sanitize,
+                moduleKeys: Object.keys(module || {}).slice(0, 5),
+              });
             }
           } catch (error) {
-            console.error('Error initializing DOMPurify:', error);
+            clientLogger.error('Error initializing DOMPurify', {
+              error: error instanceof Error ? error.message : String(error),
+            });
             // Continue without DOMPurify - React's default escaping will still protect
           }
         })
         .catch((error) => {
-          console.error('Failed to load DOMPurify:', error);
+          clientLogger.error('Failed to load DOMPurify', {
+            error: error instanceof Error ? error.message : String(error),
+          });
           // Continue without DOMPurify - React's default escaping will still protect
         });
     }
@@ -116,7 +126,10 @@ export function MessageBubble({
       });
     } catch (error) {
       // If sanitization fails, fallback to raw content
-      console.error('DOMPurify sanitization failed:', error);
+      clientLogger.error('DOMPurify sanitization failed', {
+        error: error instanceof Error ? error.message : String(error),
+        contentLength: rawContent.length,
+      });
       displayContent = rawContent;
     }
   } else {

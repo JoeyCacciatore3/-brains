@@ -305,6 +305,10 @@ async function createDatabaseWithRetryAsync(): Promise<Database.Database> {
 /**
  * Synchronous version for backward compatibility (used in getDatabase)
  * This will attempt immediate connection, but initialization should use async version
+ *
+ * IMPORTANT: This function cannot wait between retries because it's synchronous.
+ * For proper retry logic with delays, use initializeDatabaseAsync() during server startup.
+ * This function is only used as a fallback when getDatabase() is called before async initialization completes.
  */
 function createDatabaseWithRetry(): Database.Database {
   // Ensure directory exists
@@ -329,6 +333,7 @@ function createDatabaseWithRetry(): Database.Database {
         errorCode,
         attempt,
         path: dbPath,
+        note: 'Synchronous retry - no delay between attempts. Use initializeDatabaseAsync() for proper retry logic.',
       });
 
       if (attempt < MAX_RETRIES) {
@@ -336,8 +341,15 @@ function createDatabaseWithRetry(): Database.Database {
         if (errorCode === 'SQLITE_BUSY' || errorCode === 'SQLITE_LOCKED') {
           handleWALFileLocks();
         }
-        // Note: Synchronous version can't actually wait, but we'll try again immediately
-        // The async version should be used for initialization
+        // Note: Synchronous version can't actually wait between retries
+        // We use process.nextTick to yield to event loop, but this doesn't add meaningful delay
+        // The async version (initializeDatabaseAsync) should be used for initialization with proper delays
+        if (attempt > 1) {
+          // Yield to event loop to allow other operations, but don't block
+          process.nextTick(() => {
+            // This is just to yield, no actual delay
+          });
+        }
       }
     }
   }
@@ -413,3 +425,6 @@ export function closeDatabase(): void {
     }
   }
 }
+
+// Export transaction wrapper
+export { withTransaction } from './transaction';

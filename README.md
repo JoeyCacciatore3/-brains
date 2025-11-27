@@ -10,12 +10,12 @@ A production-ready Next.js application where three AI personas collaborate throu
   - **Moderator AI**: Participates as a third AI in discussions, guiding, clarifying, synthesizing ideas, and keeping the discussion focused and productive
 - **Hero-Only UI**: Clean, focused single-page experience with no navigation complexity
 - **Modern UI Design**: Black background with white text and green border accents for a sleek, terminal-inspired aesthetic
-- **Concise AI Responses**: Optimized token limits (1000 tokens default, configurable via MAX_TOKENS env var) for focused and complete AI dialogue
+- **Concise AI Responses**: Optimized token limits (2000 tokens default, configurable via MAX_TOKENS env var) for focused and complete AI dialogue
 - **Initial Topic Display**: The original topic/problem remains visible during the discussion for easy reference
 - **Multi-LLM Support**: Integrates with Groq, Mistral, and OpenRouter APIs with automatic fallback
 - **User Authentication**: OAuth authentication with GitHub for user-specific discussions
 - **Discussion System**: File-based storage (JSON + Markdown) for persistent, user-specific discussions
-- **Token Management**: Accurate token counting using tiktoken with automatic context management for long discussions
+- **Token Management**: Accurate token counting using tiktoken with automatic context management for long discussions. Standardized token estimation (3.5 chars/token) across all components for consistency.
 - **Automatic Summarization**: Intelligent summarization when discussions reach token limits (default: 4000 tokens, 50% of 8K context with safety buffer)
 - **Three-Way Discussion**: Each round includes responses from all three AIs (Analyzer → Solver → Moderator), creating rich, multi-perspective conversations
 - **Compact Message Bubbles**: Smaller, scrollable message containers (max height 250px) for efficient space usage
@@ -54,7 +54,7 @@ A production-ready Next.js application where three AI personas collaborate throu
 
 ## Prerequisites
 
-- Node.js 20.9.0 or higher
+- Node.js 20.18.0 or higher
 - npm 10.0.0 or higher
 - API keys for at least one LLM provider:
   - [Groq API Key](https://console.groq.com/)
@@ -228,40 +228,99 @@ GITHUB_CLIENT_SECRET=your_github_client_secret_here
 │   │   ├── api/               # API routes
 │   │   │   ├── health/        # Health check endpoint
 │   │   │   ├── discussions/   # Discussions API
-│   │   │   └── auth/          # Authentication API
+│   │   │   ├── auth/          # Authentication API
+│   │   │   ├── costs/         # Cost tracking API
+│   │   │   ├── metrics/       # Metrics API (Prometheus format)
+│   │   │   └── monitoring/    # Monitoring dashboard API
 │   │   ├── layout.tsx         # Root layout (with ErrorBoundary)
 │   │   ├── page.tsx           # Home page (hero section)
 │   │   └── globals.css        # Global styles
-│   ├── components/            # React components
-│   │   ├── ErrorBoundary.tsx  # Error boundary component
-│   │   ├── dialogue/          # Dialogue-specific components
-│   │   └── ui/                # Reusable UI components
-│   ├── lib/                   # Utility libraries
+│   ├── lib/                   # Core libraries
+│   │   ├── components/        # React components
+│   │   │   ├── ErrorBoundary.tsx  # Error boundary component
+│   │   │   ├── dialogue/      # Dialogue-specific components
+│   │   │   └── ui/            # Reusable UI components
 │   │   ├── llm/               # LLM integration
 │   │   │   ├── providers/     # LLM provider implementations
 │   │   │   ├── resolver.ts    # Resolution detection
+│   │   │   ├── provider-health.ts # Provider health monitoring
 │   │   │   └── index.ts       # Unified interface
-│   │   ├── socket/             # Socket.IO integration
-│   │   │   ├── client.ts       # Client-side socket hook
-│   │   │   └── handlers.ts     # Server-side socket handlers
-│   │   ├── db/                 # Database operations
-│   │   │   ├── discussions.ts   # Discussion CRUD (primary)
-│   │   │   ├── schema.ts        # Database schema
-│   │   │   ├── index.ts         # Database connection
-│   │   │   └── redis.ts         # Redis client
+│   │   ├── socket/            # Socket.IO integration
+│   │   │   ├── client.ts      # Client-side socket hook
+│   │   │   ├── handlers.ts    # Server-side socket handlers
+│   │   │   ├── auth-middleware.ts # Socket authentication
+│   │   │   ├── authorization.ts # Socket authorization
+│   │   │   ├── connection-manager.ts # Connection management
+│   │   │   └── error-deduplication.ts # Error deduplication
+│   │   ├── db/                # Database operations
+│   │   │   ├── discussions.ts # Discussion CRUD (primary)
+│   │   │   ├── schema.ts      # Database schema
+│   │   │   ├── index.ts       # Database connection
+│   │   │   ├── redis.ts       # Redis client
+│   │   │   ├── migrations.ts # Database migrations
+│   │   │   ├── monitoring.ts  # Monitoring database operations
+│   │   │   └── transaction.ts # Transaction utilities
+│   │   ├── discussions/       # Discussion file management
+│   │   │   ├── file-manager.ts # File operations
+│   │   │   ├── backup-manager.ts # Backup operations
+│   │   │   ├── reconciliation.ts # Data reconciliation
+│   │   │   ├── round-orchestrator.ts # Round orchestration
+│   │   │   ├── round-processor.ts # Round processing
+│   │   │   ├── round-validator.ts # Round validation
+│   │   │   └── token-counter.ts # Token counting
+│   │   ├── monitoring/        # Monitoring & metrics
+│   │   │   └── metrics.ts     # Metrics collection
+│   │   ├── alerting/          # Alerting system
+│   │   │   └── index.ts       # Alert management
+│   │   ├── cache/             # Caching system
+│   │   │   ├── prompt-cache.ts # Prompt caching
+│   │   │   └── response-cache.ts # Response caching
+│   │   ├── cost-tracking/     # Cost tracking
+│   │   │   ├── index.ts       # Cost tracking main
+│   │   │   └── (additional cost tracking files)
+│   │   ├── queue/             # Queue management
+│   │   │   └── (queue implementation files)
+│   │   ├── resilience/        # Resilience patterns
+│   │   │   └── (circuit breaker, retry logic)
+│   │   ├── resources/         # Resource management
+│   │   │   └── (resource management files)
+│   │   ├── config/             # Configuration
+│   │   │   ├── validator.ts   # Config validation
+│   │   │   └── (additional config files)
+│   │   ├── utils/              # Utility functions
+│   │   │   └── (utility files)
 │   │   ├── validation.ts      # Zod schemas
 │   │   ├── rate-limit.ts       # Rate limiting (Redis + in-memory)
+│   │   ├── rate-limit-tier.ts  # Rate limit tiers
 │   │   ├── logger.ts          # Winston logging
+│   │   ├── client-logger.ts   # Client-side logging
 │   │   ├── env-validation.ts  # Environment validation
+│   │   ├── config.ts          # Centralized configuration
 │   │   ├── errors.ts          # Standardized error codes
 │   │   ├── discussion-context.ts # LLM prompt formatting
-│   │   └── utils.ts            # Utility functions
-│   └── types/                  # TypeScript types
+│   │   ├── memory-manager.ts  # Memory management
+│   │   └── utils.ts          # Utility functions
+│   └── types/                 # TypeScript types
+│       └── index.ts           # Type definitions
 ├── tests/                     # Test files
 │   ├── unit/                  # Unit tests
-│   ├── integration/          # Integration tests
-│   └── e2e/                   # E2E tests
+│   ├── integration/           # Integration tests
+│   ├── e2e/                   # E2E tests
+│   ├── load/                  # Load tests
+│   └── utils/                 # Test utilities
+├── docs/                      # Documentation
+│   ├── ARCHITECTURE.md        # System architecture
+│   ├── DEPLOYMENT.md          # Deployment guide
+│   ├── MONITORING.md          # Monitoring documentation
+│   ├── OPERATIONS.md          # Operations guide
+│   ├── ALERTING.md            # Alerting documentation
+│   ├── LLM_WORKFLOW.md        # LLM workflow
+│   ├── SOCKET_EVENTS.md       # Socket.IO events
+│   └── ROUND_UTILITIES.md     # Round utilities
+├── scripts/                   # Build scripts
+│   └── pre-build-check.js     # Pre-build validation
 └── .github/                   # GitHub workflows
+    └── workflows/             # CI/CD workflows
 ```
 
 ## API Documentation
@@ -331,6 +390,168 @@ Returns all discussions for the authenticated user.
 - `401 Unauthorized`: Not authenticated
 - `404 Not Found`: User not found
 - `500 Internal Server Error`: Server error
+
+### Cost Tracking Endpoint
+
+**GET `/api/costs`**
+
+Returns cost tracking and reporting data.
+
+**Query Parameters:**
+
+- `userId` (optional): Filter costs by user ID
+- `startDate` (optional): Start date for cost range (ISO 8601)
+- `endDate` (optional): End date for cost range (ISO 8601)
+
+**Response:**
+
+```json
+{
+  "timestamp": "2024-12-01T12:00:00.000Z",
+  "costByProvider": {
+    "groq": 0.15,
+    "mistral": 0.25,
+    "openrouter": 0.10
+  },
+  "dailyCosts": [
+    {
+      "date": "2024-12-01",
+      "cost": 0.50
+    }
+  ],
+  "budget": {
+    "current": 2.50,
+    "limit": 10.00,
+    "percentage": 0.25,
+    "exceeded": false
+  },
+  "userCost": 0.15
+}
+```
+
+**Status Codes:**
+
+- `200 OK`: Success
+- `500 Internal Server Error`: Server error
+
+**Note:** See [`docs/MONITORING.md`](./docs/MONITORING.md) for detailed monitoring documentation.
+
+### Metrics Endpoint
+
+**GET `/api/metrics`**
+
+Returns system metrics in Prometheus format for monitoring integration.
+
+**Response:** Prometheus-formatted text
+
+```
+# TYPE http_requests_total counter
+http_requests_total 1234
+# TYPE http_request_duration_seconds histogram
+http_request_duration_seconds_sum 45.2
+http_request_duration_seconds_count 1234
+http_request_duration_seconds_avg 0.036
+```
+
+**Content-Type:** `text/plain; version=0.0.4`
+
+**Status Codes:**
+
+- `200 OK`: Success
+- `500 Internal Server Error`: Server error
+
+**Available Metrics:**
+
+- Counter metrics: Request counts, error counts
+- Gauge metrics: Active discussions, socket connections
+- Histogram metrics: Request duration, response times
+
+**Note:** See [`docs/MONITORING.md`](./docs/MONITORING.md) for detailed metrics documentation.
+
+### Monitoring Dashboard Endpoint
+
+**GET `/api/monitoring/dashboard`**
+
+Returns comprehensive system health and metrics data for dashboard display.
+
+**Response:**
+
+```json
+{
+  "timestamp": "2024-12-01T12:00:00.000Z",
+  "health": {
+    "database": true,
+    "redis": true,
+    "llm": true
+  },
+  "metrics": {
+    "errorRate": 0.02,
+    "totalRequests": 1234,
+    "totalErrors": 25,
+    "activeDiscussions": 5,
+    "socketConnections": 10
+  },
+  "providers": {
+    "availability": {
+      "groq": true,
+      "mistral": true,
+      "openrouter": true
+    },
+    "health": {
+      "groq": {
+        "successRate": 0.98,
+        "avgLatency": 1200
+      }
+    }
+  },
+  "circuitBreakers": {
+    "groq": {
+      "state": "closed",
+      "failures": 0
+    }
+  },
+  "alerts": [
+    {
+      "id": "alert-1",
+      "type": "error_rate",
+      "severity": "warning",
+      "message": "Error rate above threshold",
+      "timestamp": "2024-12-01T12:00:00.000Z"
+    }
+  ],
+  "costs": {
+    "byProvider": {
+      "groq": 0.15,
+      "mistral": 0.25
+    },
+    "daily": [
+      {
+        "date": "2024-12-01",
+        "cost": 0.50
+      }
+    ],
+    "budget": {
+      "current": 2.50,
+      "limit": 10.00,
+      "percentage": 0.25,
+      "exceeded": false
+    }
+  },
+  "system": {
+    "load": {
+      "cpu": 0.45,
+      "memory": 0.60
+    }
+  }
+}
+```
+
+**Status Codes:**
+
+- `200 OK`: Success
+- `500 Internal Server Error`: Server error
+
+**Note:** See [`docs/MONITORING.md`](./docs/MONITORING.md) for detailed monitoring documentation.
 
 ### Socket.IO Events
 
@@ -515,7 +736,6 @@ socket.on(
 - `RATE_LIMIT_EXCEEDED`: Rate limit exceeded
 - `VALIDATION_ERROR`: Input validation failed
 - `INVALID_DISCUSSION_ID`: Invalid discussion UUID format
-- `INVALID_DISCUSSION_ID`: Invalid discussion UUID format
 - `INVALID_FILE_SIZE`: File exceeds maximum size
 - `INVALID_FILE_TYPE`: Invalid file type
 - `DISCUSSION_NOT_FOUND`: Discussion not found
@@ -530,25 +750,210 @@ socket.on(
 
 ## Environment Variables
 
-| Variable                  | Description                                             | Required                                                   |
-| ------------------------- | ------------------------------------------------------- | ---------------------------------------------------------- |
-| `GROQ_API_KEY`            | Groq API key for Solver AI                              | Yes (at least one LLM key)                                 |
-| `MISTRAL_API_KEY`         | Mistral API key for Analyzer AI                         | Yes (at least one LLM key)                                 |
-| `OPENROUTER_API_KEY`      | OpenRouter API key (fallback, supports multiple models) | Recommended                                                |
-| `NEXT_PUBLIC_APP_URL`     | Application URL for client-side                         | Recommended                                                |
-| `APP_URL`                 | Server-side application URL for CORS                    | Optional (falls back to NEXT_PUBLIC_APP_URL)               |
-| `DATABASE_PATH`           | Database file path                                      | No (default: `data/conversations.db`)                      |
-| `LOG_LEVEL`               | Logging level                                           | No (default: `info` in production, `debug` in development) |
-| `RATE_LIMIT_MAX_REQUESTS` | Max requests per window                                 | No (default: 10)                                           |
-| `RATE_LIMIT_WINDOW_MS`    | Rate limit window in ms                                 | No (default: 60000)                                        |
-| `REDIS_URL`               | Redis connection string                                 | No (optional, for distributed rate limiting)               |
-| `REDIS_HOST`              | Redis hostname                                          | No (default: `localhost`, used if REDIS_URL not set)       |
-| `REDIS_PORT`              | Redis port                                              | No (default: 6379)                                         |
-| `REDIS_PASSWORD`          | Redis password                                          | No                                                         |
-| `GITHUB_CLIENT_ID`        | GitHub OAuth client ID                                  | No (optional, for authentication)                          |
-| `GITHUB_CLIENT_SECRET`    | GitHub OAuth client secret                              | No (optional, for authentication)                          |
-| `NEXTAUTH_SECRET`         | NextAuth secret for JWT signing                         | No (optional, for authentication)                          |
-| `DISCUSSION_TOKEN_LIMIT`  | Token limit for discussions                             | No (default: 4000)                                         |
+> **Note:** For a complete list of all environment variables with detailed descriptions, see [`env.example`](./env.example).
+
+### Required Variables
+
+| Variable             | Description                                    | Required                                    |
+| -------------------- | ---------------------------------------------- | ------------------------------------------- |
+| `GROQ_API_KEY`       | Groq API key for Solver AI                     | Yes (at least one LLM key required)        |
+| `MISTRAL_API_KEY`    | Mistral API key for Analyzer AI                | Yes (at least one LLM key required)       |
+| `OPENROUTER_API_KEY` | OpenRouter API key (fallback, multiple models) | Recommended (at least one LLM key required) |
+
+### Application Settings
+
+| Variable              | Description                                    | Default                    |
+| --------------------- | ---------------------------------------------- | -------------------------- |
+| `NEXT_PUBLIC_APP_URL` | Application URL for client-side                | `http://localhost:3000`    |
+| `APP_URL`             | Server-side application URL for CORS           | Falls back to `NEXT_PUBLIC_APP_URL` |
+| `NODE_ENV`            | Environment mode (development/production)       | `development`              |
+| `HOSTNAME`            | Server hostname                                | `localhost`                |
+| `PORT`                | Server port (1-65535)                          | `3000`                     |
+| `NEXT_PUBLIC_SOCKET_URL` | Custom Socket.IO server URL                | Falls back to `NEXT_PUBLIC_APP_URL` |
+
+### LLM Configuration
+
+| Variable                    | Description                                    | Default |
+| --------------------------- | ---------------------------------------------- | ------- |
+| `MAX_TOKENS`                | Maximum tokens per AI response                 | `2000`  |
+| `MAX_TURNS`                 | Maximum number of AI exchanges per conversation | `20`    |
+| `DISCUSSION_TOKEN_LIMIT`    | Token limit before summarization               | `4000`  |
+| `OPENROUTER_FALLBACK_MODELS` | Comma-separated fallback models              | See `env.example` |
+| `LLM_TIMEOUT_GROQ`          | Groq timeout in milliseconds                   | `60000` |
+| `LLM_TIMEOUT_MISTRAL`       | Mistral timeout in milliseconds                | `90000` |
+| `LLM_TIMEOUT_OPENROUTER`    | OpenRouter timeout in milliseconds             | `120000` |
+| `ENABLE_TOKEN_SYNC_VALIDATION` | Enable token count sync validation          | `false` |
+| `AUTO_REPAIR_TOKEN_SYNC`    | Auto-repair token count mismatches < 5%        | `false` |
+
+### Database & Storage
+
+| Variable           | Description                    | Default                      |
+| ----------------- | ------------------------------ | ---------------------------- |
+| `DATABASE_PATH`    | SQLite database file path      | `data/conversations.db`      |
+| `DISCUSSIONS_DIR`  | Directory for discussion files | `data/discussions`           |
+| `FILE_OPERATION_MAX_RETRIES` | Max retries for file operations | `3` |
+| `FILE_OPERATION_RETRY_DELAY_MS` | Retry delay in milliseconds | `100` |
+
+### Rate Limiting
+
+| Variable                          | Description                    | Default |
+| --------------------------------- | ------------------------------ | ------- |
+| `RATE_LIMIT_MAX_REQUESTS`         | Max requests per window        | `10`    |
+| `RATE_LIMIT_WINDOW_MS`            | Rate limit window in ms        | `60000` |
+| `RATE_LIMIT_START_DIALOGUE`       | Rate limit for start dialogue  | `3`     |
+| `RATE_LIMIT_PROCEED_DIALOGUE`     | Rate limit for proceed dialogue | `10`    |
+| `RATE_LIMIT_SUBMIT_ANSWERS`       | Rate limit for submit answers  | `10`    |
+| `RATE_LIMIT_GENERATE_QUESTIONS`   | Rate limit for generate questions | `5`  |
+| `RATE_LIMIT_GENERATE_SUMMARY`     | Rate limit for generate summary | `2`    |
+
+### Redis Configuration
+
+| Variable        | Description                                    | Default     |
+| --------------- | ---------------------------------------------- | ----------- |
+| `REDIS_URL`     | Redis connection string                        | (optional)  |
+| `REDIS_HOST`    | Redis hostname (used if REDIS_URL not set)     | `localhost` |
+| `REDIS_PORT`    | Redis port                                     | `6379`      |
+| `REDIS_PASSWORD` | Redis password                                | (optional)  |
+
+### Authentication (OAuth)
+
+| Variable              | Description                    | Required |
+| --------------------- | ------------------------------ | -------- |
+| `NEXTAUTH_URL`        | Base URL for OAuth callbacks   | Optional |
+| `NEXTAUTH_SECRET`     | Secret key for JWT signing     | Optional |
+| `GITHUB_CLIENT_ID`    | GitHub OAuth client ID          | Optional |
+| `GITHUB_CLIENT_SECRET` | GitHub OAuth client secret     | Optional |
+
+### Logging
+
+| Variable                  | Description                    | Default                          |
+| -------------------------- | ------------------------------ | -------------------------------- |
+| `LOG_LEVEL`               | Logging level (debug/info/warn/error) | `info` (production), `debug` (development) |
+| `NEXT_PUBLIC_LOG_LEVEL`   | Client-side log level          | `info`                           |
+| `LOG_SAMPLING_RATE`       | Log sampling rate (0.0-1.0)    | `1.0`                            |
+| `LOG_CORRELATION_ENABLED` | Enable log correlation IDs      | `true`                           |
+| `LOG_STRUCTURED_FORMAT`   | Structured log format          | `json`                           |
+
+### Session & Backup
+
+| Variable                | Description                    | Default |
+| ----------------------- | ------------------------------ | ------- |
+| `SESSION_TIMEOUT_MINUTES` | Session timeout in minutes   | `1440`  |
+| `BACKUP_ENABLED`        | Enable automatic backups       | `true`  |
+| `BACKUP_RETENTION_DAYS` | Days to retain backups        | `30`    |
+| `BACKUP_INTERVAL_HOURS` | Backup interval in hours       | `1`     |
+| `BACKUPS_DIR`          | Directory for backups          | `data/backups` |
+
+### Error Handling & Retry
+
+| Variable                      | Description                    | Default |
+| ----------------------------- | ------------------------------ | ------- |
+| `ERROR_DEDUPLICATION_WINDOW_MS` | Error deduplication window   | `5000`  |
+| `ERROR_THROTTLE_WINDOW_MS`   | Error throttle window         | `5000`  |
+| `RETRY_MAX_ATTEMPTS`         | Maximum retry attempts        | `3`    |
+| `RETRY_BASE_DELAY_MS`        | Base retry delay              | `1000`  |
+| `RETRY_MAX_DELAY_MS`         | Maximum retry delay           | `30000` |
+| `RETRY_JITTER_ENABLED`       | Enable retry jitter           | `true`  |
+
+### Monitoring & Metrics
+
+| Variable                        | Description                    | Default |
+| ------------------------------- | ------------------------------ | ------- |
+| `METRICS_ENABLED`               | Enable metrics collection      | `true`  |
+| `METRICS_RETENTION_HOURS`      | Metrics retention period       | `24`    |
+| `METRICS_AGGREGATION_INTERVAL_MS` | Metrics aggregation interval | `60000` |
+| `PERFORMANCE_SLOW_THRESHOLD_MS` | Slow request threshold        | `5000`  |
+| `PERFORMANCE_TRACK_ENABLED`     | Enable performance tracking   | `true`  |
+| `DISK_SPACE_THRESHOLD`          | Disk space threshold (0.0-1.0) | `0.1`   |
+
+### Cost Tracking
+
+| Variable                    | Description                    | Default |
+| --------------------------- | ------------------------------ | ------- |
+| `COST_TRACKING_ENABLED`     | Enable cost tracking           | `true`  |
+| `GROQ_INPUT_COST_PER_1M`    | Groq input cost per 1M tokens  | `0.27`  |
+| `GROQ_OUTPUT_COST_PER_1M`   | Groq output cost per 1M tokens | `0.27`  |
+| `MISTRAL_INPUT_COST_PER_1M` | Mistral input cost per 1M tokens | `2.50` |
+| `MISTRAL_OUTPUT_COST_PER_1M` | Mistral output cost per 1M tokens | `7.50` |
+| `OPENROUTER_INPUT_COST_PER_1M` | OpenRouter input cost per 1M tokens | `1.00` |
+| `OPENROUTER_OUTPUT_COST_PER_1M` | OpenRouter output cost per 1M tokens | `3.00` |
+| `COST_OPTIMIZATION_ENABLED` | Enable cost optimization       | `true`  |
+| `DAILY_COST_BUDGET`         | Daily cost budget in USD       | `10.00` |
+| `COST_ALERT_THRESHOLD`      | Cost alert threshold (0.0-1.0) | `0.8`   |
+
+### Circuit Breaker
+
+| Variable                          | Description                    | Default |
+| --------------------------------- | ------------------------------ | ------- |
+| `CIRCUIT_BREAKER_ENABLED`        | Enable circuit breaker          | `true`  |
+| `CIRCUIT_BREAKER_FAILURE_THRESHOLD` | Failure threshold            | `5`     |
+| `CIRCUIT_BREAKER_WINDOW_MS`      | Circuit breaker window          | `60000` |
+| `CIRCUIT_BREAKER_COOLDOWN_MS`    | Circuit breaker cooldown        | `30000` |
+| `CIRCUIT_BREAKER_SUCCESS_THRESHOLD` | Success threshold            | `2`     |
+| `PROVIDER_HEALTH_CHECK_INTERVAL_MS` | Provider health check interval | `30000` |
+| `PROVIDER_MIN_SUCCESS_RATE`      | Minimum provider success rate  | `0.95`  |
+| `PROVIDER_MAX_LATENCY_MS`        | Maximum provider latency       | `10000` |
+
+### Caching
+
+| Variable              | Description                    | Default |
+| --------------------- | ------------------------------ | ------- |
+| `CACHE_ENABLED`       | Enable caching                  | `true`  |
+| `CACHE_TTL_MS`        | Cache TTL in milliseconds      | `3600000` |
+| `CACHE_MAX_SIZE`      | Maximum cache size             | `1000`  |
+| `CACHE_RESPONSE_CACHING` | Enable response caching      | `false` |
+
+### Alerting
+
+| Variable                      | Description                    | Default |
+| ----------------------------- | ------------------------------ | ------- |
+| `ALERTS_ENABLED`              | Enable alerting                | `true`  |
+| `ALERT_ERROR_RATE_THRESHOLD`  | Error rate threshold (0.0-1.0) | `0.05`  |
+| `ALERT_DISK_SPACE_THRESHOLD`  | Disk space alert threshold     | `0.1`   |
+| `ALERT_WEBHOOK_URL`           | Webhook URL for alerts         | (optional) |
+
+### Memory Management
+
+| Variable                      | Description                    | Default |
+| ----------------------------- | ------------------------------ | ------- |
+| `MEMORY_MONITORING_ENABLED`   | Enable memory monitoring       | `true`  |
+| `MEMORY_CLEANUP_INTERVAL_MS`  | Memory cleanup interval         | `300000` |
+| `MEMORY_PRESSURE_THRESHOLD`   | Memory pressure threshold      | `0.8`   |
+
+### Graceful Degradation
+
+| Variable                              | Description                    | Default |
+| ------------------------------------- | ------------------------------ | ------- |
+| `DEGRADATION_ENABLED`                 | Enable graceful degradation    | `true`  |
+| `DEGRADATION_CPU_THRESHOLD`           | CPU threshold (0.0-1.0)        | `0.8`   |
+| `DEGRADATION_MEMORY_THRESHOLD`        | Memory threshold (0.0-1.0)      | `0.8`   |
+| `DEGRADATION_ACTIVE_REQUESTS_THRESHOLD` | Active requests threshold    | `100`   |
+
+### Feature Flags
+
+| Variable                              | Description                    | Default |
+| ------------------------------------- | ------------------------------ | ------- |
+| `FEATURE_METRICS_ENABLED`             | Enable metrics feature          | `true`  |
+| `FEATURE_COST_TRACKING_ENABLED`       | Enable cost tracking feature    | `true`  |
+| `FEATURE_CIRCUIT_BREAKER_ENABLED`     | Enable circuit breaker feature  | `true`  |
+| `FEATURE_CACHING_ENABLED`             | Enable caching feature          | `true`  |
+| `FEATURE_ALERTING_ENABLED`            | Enable alerting feature         | `true`  |
+| `FEATURE_PERFORMANCE_MONITORING_ENABLED` | Enable performance monitoring | `true` |
+
+### Security (Future Enhancement)
+
+| Variable          | Description                    | Default     |
+| ----------------- | ------------------------------ | ----------- |
+| `ENABLE_VIRUS_SCAN` | Enable virus scanning         | `false`     |
+| `CLAMAV_HOST`     | ClamAV hostname                | `localhost` |
+| `CLAMAV_PORT`     | ClamAV port                    | `3310`      |
+
+### External Services (Optional)
+
+| Variable           | Description                    | Default |
+| ------------------ | ------------------------------ | ------- |
+| `SENTRY_DSN`       | Sentry DSN for error tracking  | (optional) |
+| `VERCEL_ANALYTICS_ID` | Vercel Analytics ID        | (optional) |
 
 ## Testing
 

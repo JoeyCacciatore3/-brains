@@ -62,7 +62,7 @@ describe('Dialogue Integration Tests', () => {
         fileResult.id
       );
 
-      const retrieved = getDiscussion(discussion.id);
+      const retrieved = getDiscussion(discussion.id, testUserId);
 
       expect(retrieved).toBeDefined();
       expect(retrieved?.id).toBe(discussion.id);
@@ -129,7 +129,7 @@ describe('Dialogue Integration Tests', () => {
         current_turn: 2,
       });
 
-      const updated = getDiscussion(discussion.id);
+      const updated = getDiscussion(discussion.id, testUserId);
 
       expect(updated?.is_resolved).toBe(1);
       expect(updated?.current_turn).toBe(2);
@@ -157,7 +157,7 @@ describe('Dialogue Integration Tests', () => {
         },
       ];
 
-      expect(isResolved(messages)).toBe(false);
+      expect(isResolved(messages).resolved).toBe(false);
     });
 
     it('should detect resolution with keywords', () => {
@@ -196,7 +196,7 @@ describe('Dialogue Integration Tests', () => {
         },
       ];
 
-      expect(isResolved(messages)).toBe(true);
+      expect(isResolved(messages).resolved).toBe(true);
     });
 
     it('should detect when user input is needed', () => {
@@ -266,7 +266,7 @@ describe('Dialogue Integration Tests', () => {
         is_resolved: 1,
       });
 
-      const updated = getDiscussion(discussion.id);
+      const updated = getDiscussion(discussion.id, testUserId);
       expect(updated?.is_resolved).toBe(1);
     });
   });

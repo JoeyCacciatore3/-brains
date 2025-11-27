@@ -302,7 +302,7 @@ function getAuthOptions(providers: ReturnType<typeof getProviders>): NextAuthCon
       }
       return session;
     },
-    async jwt({ token, user, account }) {
+    async jwt({ token, user, account: _account }) {
       // NextAuth v5 JWT callback - ensure user ID is in token
       // JWT payload structure must match socket middleware expectations:
       // { sub: userId, email: user.email, name: user.name, iat: issuedAt, exp: expiresAt }
@@ -425,3 +425,21 @@ export function signOut(...args: Parameters<ReturnType<typeof NextAuth>['signOut
 
 // Export helpers for getting providers and auth options
 export { getProviders, getAuthOptions };
+
+/**
+ * Type-safe wrapper for getting auth session
+ * Handles NextAuth v5 types properly without using type assertions
+ * @returns Promise resolving to session or null if not authenticated
+ */
+export async function getAuthSession() {
+  try {
+    const nextAuthInstance = initializeNextAuth();
+    const session = await nextAuthInstance.auth();
+    return session;
+  } catch (error) {
+    logger.error('Failed to get auth session', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}

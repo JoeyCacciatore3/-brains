@@ -30,34 +30,37 @@ This directory contains comprehensive documentation for the AI Dialogue Platform
 
 ### Audit & Review Reports
 
-3. **[AUDIT_COMPLETE_SUMMARY.md](./AUDIT_COMPLETE_SUMMARY.md)**
+3. **[AUDIT_REPORT.md](../AUDIT_REPORT.md)**
    - **Current authoritative audit report**
-   - Complete 5-stage audit summary
-   - Implementation status of all improvements
-   - Security, code quality, architecture, and testing assessment
+   - Comprehensive codebase audit covering security, type safety, code quality, configuration, testing, dependencies, performance, architecture, and documentation
+   - Complete findings with priority breakdown and recommendations
    - **Start here for audit information**
-
-4. **[AUDIT_HISTORY.md](./AUDIT_HISTORY.md)**
-   - Historical audit documents archive
-   - Reference for past audit findings
 
 ### Development & Testing
 
-10. **[IMPLEMENTATION_SUMMARY.md](./IMPLEMENTATION_SUMMARY.md)**
-    - Summary of implementation work completed
-    - Changes made and improvements
-    - Files created and modified
-
-11. **[TESTING_CHECKLIST.md](./TESTING_CHECKLIST.md)**
-    - Comprehensive testing checklist
-    - Test scenarios and execution status
+4. **[LLM_WORKFLOW.md](./LLM_WORKFLOW.md)**
+   - LLM workflow documentation
+   - Provider integration details
+   - Error handling and retry logic
 
 ### Production
 
-10. **[PRODUCTION_READINESS_CHECKLIST.md](./PRODUCTION_READINESS_CHECKLIST.md)**
-    - Pre-launch checklist
-    - Must-have vs nice-to-have items
-    - Sign-off sections
+5. **[DEPLOYMENT.md](./DEPLOYMENT.md)**
+   - Deployment guide
+   - Environment setup
+   - Production configuration
+
+6. **[MONITORING.md](./MONITORING.md)**
+   - Monitoring and metrics documentation
+   - Health checks and alerting
+
+7. **[OPERATIONS.md](./OPERATIONS.md)**
+   - Operational procedures
+   - Troubleshooting guides
+
+8. **[ALERTING.md](./ALERTING.md)**
+   - Alerting system documentation
+   - Alert configuration and management
 
 ---
 
@@ -67,18 +70,19 @@ This directory contains comprehensive documentation for the AI Dialogue Platform
 
 1. Start with **[ARCHITECTURE.md](./ARCHITECTURE.md)** for system overview
 2. Read **[SOCKET_EVENTS.md](./SOCKET_EVENTS.md)** for event system understanding
-3. Review **[IMPLEMENTATION_SUMMARY.md](./IMPLEMENTATION_SUMMARY.md)** for recent changes
+3. Review **[LLM_WORKFLOW.md](./LLM_WORKFLOW.md)** for LLM integration details
 
 ### For Security Review
 
-1. Start with **[AUDIT_COMPLETE_SUMMARY.md](./AUDIT_COMPLETE_SUMMARY.md)** for comprehensive audit findings
-2. Review **[AUDIT_HISTORY.md](./AUDIT_HISTORY.md)** for historical audit context
+1. Start with **[AUDIT_REPORT.md](../AUDIT_REPORT.md)** for comprehensive audit findings
+2. Review security sections for vulnerabilities and fixes
 
 ### For Production Deployment
 
-1. Review **[PRODUCTION_READINESS_CHECKLIST.md](./PRODUCTION_READINESS_CHECKLIST.md)**
-2. Check **[TESTING_CHECKLIST.md](./TESTING_CHECKLIST.md)** for test coverage and execution status
-3. Verify all security items in audit documents
+1. Review **[DEPLOYMENT.md](./DEPLOYMENT.md)** for deployment procedures
+2. Check **[MONITORING.md](./MONITORING.md)** for monitoring setup
+3. Review **[OPERATIONS.md](./OPERATIONS.md)** for operational procedures
+4. Verify all security items in **[AUDIT_REPORT.md](../AUDIT_REPORT.md)**
 
 ---
 
@@ -87,11 +91,14 @@ This directory contains comprehensive documentation for the AI Dialogue Platform
 ```
 ARCHITECTURE.md (System Design)
     └── SOCKET_EVENTS.md (Event System)
+    └── LLM_WORKFLOW.md (LLM Integration)
 
-AUDIT_COMPLETE_SUMMARY.md (Current Audit Report)
-    └── AUDIT_HISTORY.md (Historical Audits)
+AUDIT_REPORT.md (Root Level - Comprehensive Audit)
 
 DEPLOYMENT.md (Deployment Guide)
+    └── MONITORING.md (Monitoring & Metrics)
+    └── OPERATIONS.md (Operations)
+    └── ALERTING.md (Alerting System)
 ```
 
 ---
@@ -103,6 +110,6 @@ DEPLOYMENT.md (Deployment Guide)
 
 ## Recent Updates
 
-- **December 2024:** Consolidated all audit documentation into single authoritative `AUDIT_COMPLETE_SUMMARY.md`
-- All medium-priority audit findings have been implemented and verified
-- Documentation structure simplified for better maintainability
+- **December 2024:** Comprehensive audit report available at root level `AUDIT_REPORT.md`
+- Documentation index updated to reference actual files
+- All referenced documentation files verified to exist

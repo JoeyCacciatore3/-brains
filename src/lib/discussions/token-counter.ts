@@ -14,11 +14,101 @@ interface Tokenizer {
   encode: (text: string) => Uint32Array;
 }
 
+/**
+ * Valid tiktoken model names
+ * These are the models that tiktoken.encoding_for_model() accepts
+ */
+type TiktokenModel =
+  | 'gpt-4'
+  | 'gpt-3.5-turbo'
+  | 'gpt-4o'
+  | 'gpt-4o-mini'
+  | 'text-davinci-003'
+  | 'text-davinci-002'
+  | 'text-davinci-001'
+  | 'text-curie-001'
+  | 'text-babbage-001'
+  | 'text-ada-001'
+  | 'davinci'
+  | 'curie'
+  | 'babbage'
+  | 'ada'
+  | 'code-davinci-002'
+  | 'code-davinci-001'
+  | 'code-cushman-002'
+  | 'code-cushman-001'
+  | 'davinci-codex'
+  | 'cushman-codex'
+  | 'text-davinci-edit-001'
+  | 'code-davinci-edit-001'
+  | 'text-embedding-ada-002'
+  | 'text-similarity-davinci-001'
+  | 'text-similarity-curie-001'
+  | 'text-similarity-babbage-001'
+  | 'text-similarity-ada-001'
+  | 'text-search-davinci-doc-001'
+  | 'text-search-curie-doc-001'
+  | 'text-search-babbage-doc-001'
+  | 'text-search-ada-doc-001'
+  | 'code-search-babbage-code-001'
+  | 'code-search-ada-code-001'
+  | 'gpt2';
+
+/**
+ * Type guard to check if a string is a valid tiktoken model
+ */
+function isValidTiktokenModel(model: string): model is TiktokenModel {
+  const validModels: TiktokenModel[] = [
+    'gpt-4',
+    'gpt-3.5-turbo',
+    'gpt-4o',
+    'gpt-4o-mini',
+    'text-davinci-003',
+    'text-davinci-002',
+    'text-davinci-001',
+    'text-curie-001',
+    'text-babbage-001',
+    'text-ada-001',
+    'davinci',
+    'curie',
+    'babbage',
+    'ada',
+    'code-davinci-002',
+    'code-davinci-001',
+    'code-cushman-002',
+    'code-cushman-001',
+    'davinci-codex',
+    'cushman-codex',
+    'text-davinci-edit-001',
+    'code-davinci-edit-001',
+    'text-embedding-ada-002',
+    'text-similarity-davinci-001',
+    'text-similarity-curie-001',
+    'text-similarity-babbage-001',
+    'text-similarity-ada-001',
+    'text-search-davinci-doc-001',
+    'text-search-curie-doc-001',
+    'text-search-babbage-doc-001',
+    'text-search-ada-doc-001',
+    'code-search-babbage-code-001',
+    'code-search-ada-code-001',
+    'gpt2',
+  ];
+  return validModels.includes(model as TiktokenModel);
+}
+
 // Cache tokenizers by model name
 const tokenizerCache = new Map<string, Tokenizer>();
 
 // Flag to track if tiktoken is available
 let tiktokenAvailable: boolean | null = null;
+
+/**
+ * Standardized token estimation constant
+ * Used consistently across the codebase for token estimation
+ * Based on average English text: ~3.5 characters per token
+ */
+export const TOKEN_ESTIMATION_CHARS_PER_TOKEN = 3.5;
 
 /**
  * Get tokenizer for a specific model
@@ -71,7 +161,11 @@ async function getTokenizer(model?: string): Promise<{
         const tiktoken = await import('tiktoken');
         tiktokenAvailable = true;
         // Create new tokenizer
-        const tokenizer = tiktoken.encoding_for_model(tiktokenModel as any);
+        // Use type assertion only after validating model name
+        const validModel: TiktokenModel = isValidTiktokenModel(tiktokenModel)
+          ? tiktokenModel
+          : 'gpt-3.5-turbo'; // Fallback to default
+        const tokenizer = tiktoken.encoding_for_model(validModel);
         tokenizerCache.set(tiktokenModel, tokenizer);
 
         return {
@@ -89,7 +183,11 @@ async function getTokenizer(model?: string): Promise<{
 
     // If we get here, tiktoken is available
     const tiktoken = await import('tiktoken');
-    const tokenizer = tiktoken.encoding_for_model(tiktokenModel as any);
+    // Use type assertion only after validating model name
+    const validModel: TiktokenModel = isValidTiktokenModel(tiktokenModel)
+      ? tiktokenModel
+      : 'gpt-3.5-turbo'; // Fallback to default
+    const tokenizer = tiktoken.encoding_for_model(validModel);
     tokenizerCache.set(tiktokenModel, tokenizer);
 
     return {
@@ -169,6 +267,21 @@ export async function countTokensAsync(text: string, model?: string): Promise<nu
 }
 
 /**
+ * Estimate tokens from character count using standardized estimation
+ * This provides a simple, consistent way to estimate tokens from character count
+ * across the codebase.
+ *
+ * @param charCount - Number of characters to estimate tokens for
+ * @returns Estimated token count
+ */
+export function estimateTokensFromChars(charCount: number): number {
+  if (charCount <= 0) {
+    return 0;
+  }
+  return Math.ceil(charCount / TOKEN_ESTIMATION_CHARS_PER_TOKEN);
+}
+
+/**
  * Estimate token count from text (fallback method)
  * Uses improved estimation based on actual tokenization patterns
  *
@@ -198,7 +311,7 @@ export function estimateTokenCount(text: string): number {
 
   // Count words (split on whitespace)
   const words = trimmed.split(/\s+/).filter(w => w.length > 0);
-  const wordCount = words.length;
+  // Note: wordCount calculated but not used (kept for potential future use)
 
   // Count characters excluding whitespace
   const charCountWithoutWhitespace = trimmed.replace(/\s+/g, '').length;
@@ -213,9 +326,9 @@ export function estimateTokenCount(text: string): number {
   // 2. Punctuation marks (often separate tokens, ~1 per punctuation)
   // 3. Word boundaries (can affect tokenization but less significant)
 
-  // Conservative estimate: ~3.5-4 chars per token for word content
+  // Conservative estimate: ~3.5 chars per token for word content (standardized)
   // This is more accurate than 4 chars/token for typical English content
-  const baseTokens = Math.ceil(charCountWithoutWhitespace / 3.75); // Slightly more aggressive than 4
+  const baseTokens = Math.ceil(charCountWithoutWhitespace / TOKEN_ESTIMATION_CHARS_PER_TOKEN);
 
   // Add punctuation tokens (most punctuation is separate tokens)
   const punctuationTokens = Math.ceil(punctuationCount * 0.8); // Most punctuation is separate tokens

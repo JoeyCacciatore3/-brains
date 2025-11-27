@@ -1,7 +1,7 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 // Helper function to wait for socket connection
-async function waitForConnection(page: any) {
+async function waitForConnection(page: Page) {
   // Wait for connection indicator to appear
   const connectionIndicator = page.locator('text=/Connected|Connecting|Reconnecting/i');
   await connectionIndicator.waitFor({ timeout: 10000 });
@@ -11,7 +11,7 @@ async function waitForConnection(page: any) {
 }
 
 // Helper function to start a dialogue
-async function startDialogue(page: any, topic: string) {
+async function startDialogue(page: Page, topic: string) {
   const topicInput = page.getByPlaceholder(/Enter a problem to solve/i);
   await topicInput.fill(topic);
 

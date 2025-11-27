@@ -40,6 +40,23 @@ export interface Discussion {
 }
 
 /**
+ * SECURITY: Whitelist of allowed field names for UPDATE operations
+ * This prevents SQL injection by ensuring only valid, hardcoded field names can be used.
+ * WARNING: Do NOT modify this to accept dynamic field names from external input.
+ * If you need to add new fields, add them to this whitelist and update the schema.
+ */
+const ALLOWED_UPDATE_FIELDS = new Set([
+  'token_count',
+  'summary',
+  'summary_created_at',
+  'is_resolved',
+  'needs_user_input',
+  'user_input_pending',
+  'current_turn',
+  'updated_at',
+] as const);
+
+/**
  * Create a new discussion (METADATA ONLY)
  *
  * Single Source of Truth: This function only creates database metadata.
@@ -173,18 +190,13 @@ export function getActiveDiscussion(userId: string): Discussion | null {
 }
 
 /**
- * Atomically check for active discussion using SQLite's BEGIN IMMEDIATE
- * This prevents race conditions when multiple requests try to create discussions simultaneously
- * Uses exclusive lock to ensure only one check/creation happens at a time per user
- *
- * Also checks for "stuck" discussions (old, unresolved, no recent activity) and optionally auto-resolves them
- *
+ * Internal function to check for active discussion (called within lock)
  * @param userId - User ID to check for active discussions
  * @param autoResolveStuck - If true, automatically resolve discussions that appear stuck (default: true)
  * @param stuckThresholdMs - Time in milliseconds after which a discussion is considered stuck (default: 1 hour)
  * @returns Active discussion if found, null otherwise
  */
-export function checkActiveDiscussionAtomically(
+function checkActiveDiscussionInternal(
   userId: string,
   autoResolveStuck: boolean = true,
   stuckThresholdMs: number = 60 * 60 * 1000 // 1 hour default
@@ -192,8 +204,7 @@ export function checkActiveDiscussionAtomically(
   const db = getDatabase();
   const now = Date.now();
 
-  // Use BEGIN IMMEDIATE to get exclusive lock immediately
-  // This prevents other transactions from reading/writing until this one completes
+  // Use transaction for atomicity
   const transaction = db.transaction(() => {
     const row = db
       .prepare(
@@ -255,18 +266,63 @@ export function checkActiveDiscussionAtomically(
   });
 
   try {
-    // Execute transaction with immediate lock
-    // Note: better-sqlite3 doesn't support BEGIN IMMEDIATE directly in transactions,
-    // but the transaction itself provides atomicity. For true exclusive locking,
-    // we'd need to use a mutex or file locking, but for SQLite's default behavior,
-    // this transaction provides sufficient atomicity for our use case.
     return transaction() as Discussion | null;
   } catch (error) {
-    logger.error('Error in checkActiveDiscussionAtomically', {
+    logger.error('Error in checkActiveDiscussionInternal', {
       error: error instanceof Error ? error.message : String(error),
       userId,
     });
     throw error;
+  }
+}
+
+/**
+ * Atomically check for active discussion using file locking for true exclusive access
+ * This prevents race conditions when multiple requests try to create discussions simultaneously
+ * Uses application-level file locking to ensure only one check/creation happens at a time per user
+ *
+ * Also checks for "stuck" discussions (old, unresolved, no recent activity) and optionally auto-resolves them
+ *
+ * @param userId - User ID to check for active discussions
+ * @param autoResolveStuck - If true, automatically resolve discussions that appear stuck (default: true)
+ * @param stuckThresholdMs - Time in milliseconds after which a discussion is considered stuck (default: 1 hour)
+ * @returns Promise<Discussion | null> - Active discussion if found, null otherwise
+ */
+export async function checkActiveDiscussionAtomically(
+  userId: string,
+  autoResolveStuck: boolean = true,
+  stuckThresholdMs: number = 60 * 60 * 1000 // 1 hour default
+): Promise<Discussion | null> {
+  // Use file locking with a special discussionId for active discussion checks
+  // This ensures only one check happens at a time per user
+  // The lock key will be: file-lock:${userId}:active-discussion-check
+  const specialDiscussionId = 'active-discussion-check';
+  const LOCK_TTL = 30000; // 30 seconds timeout to prevent deadlocks
+
+  try {
+    // Import file locking functions
+    const { acquireLockWithRetry, releaseLock } = await import('@/lib/discussions/file-lock');
+
+    // Acquire lock with retry (using special discussionId for this operation)
+    const lockId = await acquireLockWithRetry(specialDiscussionId, userId, LOCK_TTL, 50); // 5 seconds max retry
+
+    try {
+      // Perform the check within the lock
+      return checkActiveDiscussionInternal(userId, autoResolveStuck, stuckThresholdMs);
+    } finally {
+      // Always release the lock
+      await releaseLock(specialDiscussionId, userId, lockId);
+    }
+  } catch (error) {
+    logger.error('Error in checkActiveDiscussionAtomically (lock acquisition failed)', {
+      error: error instanceof Error ? error.message : String(error),
+      userId,
+      specialDiscussionId,
+    });
+    // If lock acquisition fails, fall back to non-locked check (better than failing completely)
+    // This is a graceful degradation
+    logger.warn('Falling back to non-locked active discussion check', { userId });
+    return checkActiveDiscussionInternal(userId, autoResolveStuck, stuckThresholdMs);
   }
 }
 
@@ -295,43 +351,52 @@ export function updateDiscussion(
     const updateFields: string[] = [];
     const updateValues: unknown[] = [];
 
+    // SECURITY: Validate and build update fields using whitelist
+    // All field names are hardcoded literals, but we validate against whitelist as defense-in-depth
+    const fieldMappings: Array<{ field: string; value: unknown }> = [];
+
     if (updates.token_count !== undefined) {
-      updateFields.push('token_count = ?');
-      updateValues.push(updates.token_count);
+      fieldMappings.push({ field: 'token_count', value: updates.token_count });
     }
     if (updates.summary !== undefined) {
-      updateFields.push('summary = ?');
-      updateValues.push(updates.summary);
+      fieldMappings.push({ field: 'summary', value: updates.summary });
     }
     if (updates.summary_created_at !== undefined) {
-      updateFields.push('summary_created_at = ?');
-      updateValues.push(updates.summary_created_at);
+      fieldMappings.push({ field: 'summary_created_at', value: updates.summary_created_at });
     }
     if (updates.is_resolved !== undefined) {
-      updateFields.push('is_resolved = ?');
-      updateValues.push(updates.is_resolved);
+      fieldMappings.push({ field: 'is_resolved', value: updates.is_resolved });
     }
     if (updates.needs_user_input !== undefined) {
-      updateFields.push('needs_user_input = ?');
-      updateValues.push(updates.needs_user_input);
+      fieldMappings.push({ field: 'needs_user_input', value: updates.needs_user_input });
     }
     if (updates.user_input_pending !== undefined) {
-      updateFields.push('user_input_pending = ?');
-      updateValues.push(updates.user_input_pending);
+      fieldMappings.push({ field: 'user_input_pending', value: updates.user_input_pending });
     }
     if (updates.current_turn !== undefined) {
-      updateFields.push('current_turn = ?');
-      updateValues.push(updates.current_turn);
+      fieldMappings.push({ field: 'current_turn', value: updates.current_turn });
     }
 
     // Always update updated_at unless explicitly set
     if (updates.updated_at !== undefined) {
-      updateFields.push('updated_at = ?');
-      updateValues.push(updates.updated_at);
-    } else if (updateFields.length > 0) {
+      fieldMappings.push({ field: 'updated_at', value: updates.updated_at });
+    } else if (fieldMappings.length > 0) {
       // Only auto-update if there are other fields to update
-      updateFields.push('updated_at = ?');
-      updateValues.push(Date.now());
+      fieldMappings.push({ field: 'updated_at', value: Date.now() });
+    }
+
+    // SECURITY: Validate all field names against whitelist
+    // This prevents SQL injection even if code is refactored in the future
+    for (const { field, value } of fieldMappings) {
+      // Type assertion is safe here because field comes from hardcoded mappings above
+      if (!ALLOWED_UPDATE_FIELDS.has(field as typeof ALLOWED_UPDATE_FIELDS extends Set<infer T> ? T : never)) {
+        throw new Error(
+          `Security violation: Attempted to update disallowed field "${field}". ` +
+            'This field is not in the whitelist. If you need to add new fields, update ALLOWED_UPDATE_FIELDS.'
+        );
+      }
+      updateFields.push(`${field} = ?`);
+      updateValues.push(value);
     }
 
     if (updateFields.length === 0) {

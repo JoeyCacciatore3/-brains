@@ -4,9 +4,7 @@
  * Prevents out-of-order execution and provides clear error handling
  */
 
-import type { Server } from 'socket.io';
-import type { DiscussionRound, FileData, ConversationMessage } from '@/types';
-import { logger } from '@/lib/logger';
+import type { DiscussionRound, ConversationMessage } from '@/types';
 import { aiPersonas } from '@/lib/llm';
 import type { Persona } from '@/lib/llm';
 import { calculateTurnNumber } from './round-utils';

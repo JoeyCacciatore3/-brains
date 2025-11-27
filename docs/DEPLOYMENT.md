@@ -6,7 +6,7 @@ This guide covers deploying the AI Dialogue Platform to production environments.
 
 ## Prerequisites
 
-- Node.js 20.9.0 or higher
+- Node.js 20.18.0 or higher
 - npm 10.0.0 or higher
 - At least one LLM API key (Groq, Mistral, or OpenRouter)
 - (Optional) Redis server for distributed rate limiting

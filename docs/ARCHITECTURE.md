@@ -21,6 +21,10 @@
 10. [Import/Export Map](#10-importexport-map)
 11. [Type System](#11-type-system)
 12. [Utilities & Helpers](#12-utilities--helpers)
+13. [Monitoring & Observability](#13-monitoring--observability)
+14. [Cost Tracking & Optimization](#14-cost-tracking--optimization)
+15. [Resilience & Circuit Breakers](#15-resilience--circuit-breakers)
+16. [Scalability & Performance](#16-scalability--performance)
 
 ---
 
@@ -98,7 +102,7 @@ The AI Dialogue Platform is a real-time web application where three AI personas 
 
 **Backend:**
 
-- Node.js 20.9.0+
+- Node.js 20.18.0+
 - Next.js Server
 - Socket.IO Server 4.7.0
 - TypeScript
@@ -127,7 +131,11 @@ The AI Dialogue Platform is a real-time web application where three AI personas 
 
 **Development Tools:**
 
-- ESLint 8.56.0
+- ESLint 8.57.0
+  - @typescript-eslint/parser ^6.21.0
+  - @typescript-eslint/eslint-plugin ^6.21.0
+  - eslint-plugin-react ^7.33.2
+  - eslint-plugin-react-hooks ^4.6.0
 - Prettier 3.2.4
 - tsx 4.7.0 (TypeScript execution)
 
@@ -1241,11 +1249,18 @@ UPDATE discussions SET updated_at = ?, [field] = ? WHERE id = ?
 
 **Location:** `src/lib/discussions/token-counter.ts`
 
-#### `estimateTokenCount(text: string): number`
+**Status:** ✅ **Updated** (December 2024) - Token estimation standardized to 3.5 chars/token with centralized constant and helper function.
+
+**Constants:**
+- `TOKEN_ESTIMATION_CHARS_PER_TOKEN = 3.5` - Standardized token estimation constant
+
+**Functions:**
+- `estimateTokensFromChars(charCount: number): number` - Centralized token estimation helper
+- `estimateTokenCount(text: string): number` - Enhanced estimation algorithm (uses standardized constant)
 
 **Purpose:** Estimate token count from text
 
-**Algorithm:** ~4 characters per token (English text approximation)
+**Algorithm:** Standardized to 3.5 characters per token (English text approximation). Uses `TOKEN_ESTIMATION_CHARS_PER_TOKEN` constant for consistency across codebase.
 
 #### `getTokenLimit(): number`
 
@@ -3615,9 +3630,21 @@ if (!result.success) {
 
 #### `src/lib/discussion-context.ts`
 
-##### `formatLLMPrompt(topic, messages, isFirstMessage, respondingPersonaName, files?): string`
+##### `formatLLMPrompt(topic, messages, isFirstMessage, respondingPersonaName, files?, ...): string`
 
 **Purpose:** Format conversation context for LLM
+
+**Status:** ✅ **Refactored** (December 2024) - Function has been broken down into smaller helper functions for better maintainability.
+
+**Helper Functions:**
+- `formatSummaryContext()` - Formats summary sections
+- `formatFileInfo()` - Formats file information
+- `formatUserAnswersSection()` - Formats user answers
+- `formatRoundTranscript()` - Formats round transcripts
+- `formatFirstMessagePrompt()` - Formats first message prompts
+- `formatUserInputPrompt()` - Formats user input prompts
+- `formatNewRoundPrompt()` - Formats new round prompts
+- `formatContinuationPrompt()` - Formats continuation prompts
 
 **Parameters:**
 
@@ -3626,6 +3653,11 @@ if (!result.success) {
 - `isFirstMessage`: Whether this is the first message in the conversation
 - `respondingPersonaName`: The name of the AI persona that will be responding ('Solver AI', 'Analyzer AI', or 'Moderator AI')
 - `files?`: Optional file attachments (only used for first message)
+- `rounds?`: Optional rounds array (new round-based structure)
+- `currentSummary?`: Optional current summary entry
+- `summaries?`: Optional all summaries
+- `userAnswers?`: Optional user answers to questions
+- `currentRoundNumber?`: Optional current round number
 
 **First Message:**
 
@@ -3881,5 +3913,281 @@ The document serves as a comprehensive reference for understanding, maintaining,
 - Added UUID validation
 - Optimized database queries
 - Standardized error messages
+
+## 13. Monitoring & Observability
+
+### Overview
+
+The platform includes comprehensive monitoring and observability features for production operations.
+
+### Metrics Collection
+
+**Location:** `src/lib/monitoring/metrics.ts`, `src/lib/monitoring/collectors.ts`
+
+**Features:**
+- Request rates (per operation type)
+- Error rates (per error type, per operation)
+- Response times (p50, p95, p99)
+- LLM API latency (per provider)
+- Token usage (input/output per provider)
+- Active discussions count
+- Socket connection count
+- Rate limit hits (per operation)
+- Retry attempts and success rates
+
+**Storage:**
+- In-memory metrics store with periodic aggregation
+- Redis-backed metrics for distributed deployments
+- Metrics export endpoint (`/api/metrics`) for Prometheus format
+
+### Health Checks
+
+**Location:** `src/app/api/health/route.ts`
+
+**Checks:**
+- Database connectivity and query performance
+- Redis connectivity (if enabled)
+- LLM provider availability (all providers)
+- Disk space (database and file storage)
+- Memory usage
+- Active socket connections
+
+**Health Levels:**
+- `healthy`: All systems operational
+- `degraded`: Some systems degraded but service available
+- `unhealthy`: Critical systems unavailable
+
+### Performance Monitoring
+
+**Location:** `src/lib/monitoring/performance.ts`
+
+**Features:**
+- Request duration tracking
+- Database query timing
+- LLM API call timing
+- File I/O operations timing
+- Socket event processing time
+- Slow operation detection (configurable thresholds)
+- Performance bottleneck identification
+
+### Structured Logging
+
+**Location:** `src/lib/monitoring/log-context.ts`
+
+**Features:**
+- Correlation IDs for request tracking
+- Structured logging with consistent fields
+- Log sampling for high-volume operations
+- Error context enrichment
+- JSON format for log aggregation
+
+## 14. Cost Tracking & Optimization
+
+### Overview
+
+The platform tracks LLM API costs and provides optimization strategies.
+
+### Cost Tracking
+
+**Location:** `src/lib/cost-tracking/cost-calculator.ts`, `src/lib/cost-tracking/provider-costs.ts`
+
+**Features:**
+- Token usage tracking per provider (input/output)
+- Cost calculation based on provider pricing
+- Cost aggregation:
+  - Per discussion cost
+  - Per user cost
+  - Daily/weekly/monthly totals
+- Cost storage in database (`cost_tracking` table)
+- Cost reporting endpoint (`/api/costs`)
+
+### Cost Optimization
+
+**Location:** `src/lib/cost-tracking/optimizer.ts`
+
+**Strategies:**
+- Provider selection based on cost (when multiple available)
+- Token usage optimization:
+  - System prompt caching (reduce repeated tokens)
+  - Summary optimization
+  - Context window optimization
+- Cost alerts (daily/weekly/monthly budgets)
+- Cost reporting dashboard data
+
+### Provider Pricing
+
+**Configuration:**
+- Groq: $0.27 per 1M tokens (input/output)
+- Mistral: $2.50/$7.50 per 1M tokens (input/output)
+- OpenRouter: Varies by model (configurable)
+
+## 15. Resilience & Circuit Breakers
+
+### Circuit Breakers
+
+**Location:** `src/lib/resilience/circuit-breaker.ts`
+
+**Features:**
+- Circuit breaker per LLM provider
+- Failure threshold (default: 5 failures in 60s)
+- Half-open state after cooldown (default: 30s)
+- Success threshold to close (default: 2 successes)
+- Automatic provider fallback when circuit is open
+- Circuit breaker metrics and monitoring
+
+**States:**
+- `closed`: Normal operation
+- `open`: Blocking requests due to failures
+- `half-open`: Testing if service recovered
+
+### Provider Health Monitoring
+
+**Location:** `src/lib/llm/provider-health.ts`
+
+**Features:**
+- Success rate tracking (last 100 requests)
+- Average latency monitoring
+- Error rate by type
+- Availability percentage
+- Health-based provider selection
+- Automatic provider rotation on health degradation
+- Provider health endpoint (`/api/llm/health`)
+
+### Graceful Degradation
+
+**Location:** `src/lib/resilience/degradation.ts`
+
+**Strategies:**
+- Reduce max tokens when providers struggling
+- Skip non-critical operations (e.g., question generation)
+- Queue operations when system overloaded
+- Return cached responses when available
+- System load detection (CPU, memory, active requests)
+- Automatic degradation triggers
+- User notification of degraded service
+
+### Error Handling
+
+**Location:** `src/lib/socket/error-deduplication.ts`, `src/lib/utils/retry.ts`
+
+**Features:**
+- Error deduplication (prevents duplicate error emissions)
+- Error classification (Transient, Recoverable, Permanent)
+- Retry logic with exponential backoff
+- Jitter to prevent thundering herd
+- Retryable error detection (429, 503, network timeouts)
+- State preservation on transient errors
+
+## 16. Scalability & Performance
+
+### Caching Strategy
+
+**Location:** `src/lib/cache/response-cache.ts`, `src/lib/cache/prompt-cache.ts`
+
+**Features:**
+- Response caching (optional, for identical prompts)
+- System prompt token count caching
+- Redis-backed caching with TTL
+- Cache invalidation strategies
+- Cache hit/miss metrics
+
+### Rate Limiting
+
+**Location:** `src/lib/rate-limit.ts`
+
+**Features:**
+- Operation-specific rate limiting:
+  - Start dialogue: 3 per minute
+  - Proceed dialogue: 10 per minute
+  - Submit answers: 10 per minute
+  - Generate questions: 5 per minute
+  - Generate summary: 2 per minute
+- Redis-backed distributed rate limiting
+- In-memory fallback
+- Rate limit info in error responses
+
+### Database Optimization
+
+**Location:** `src/lib/db/schema.ts`
+
+**Indexes:**
+- `discussions.user_id` (user lookup)
+- `discussions.created_at` (time-based queries)
+- `discussions.is_resolved` (filtering resolved discussions)
+- `cost_tracking.discussion_id`, `cost_tracking.user_id`, `cost_tracking.timestamp`
+
+**Features:**
+- WAL mode for better concurrent performance
+- Connection health checks
+- Query timeout handling
+
+### Memory Management
+
+**Location:** `src/lib/resources/memory-manager.ts`
+
+**Features:**
+- Memory usage monitoring
+- Memory leak detection
+- Automatic cleanup of:
+  - Expired rate limit entries
+  - Old connection tracking data
+  - Stale cache entries
+  - Completed discussion contexts
+- Memory pressure handling
+
+### Alerting System
+
+**Location:** `src/lib/alerting/alerts.ts`
+
+**Alert Conditions:**
+- High error rate (> 5% in 5 minutes)
+- Provider unavailability (all providers down)
+- Rate limit exhaustion
+- Database issues
+- Disk space low (< 10% free)
+- Cost threshold exceeded
+- Performance degradation
+
+**Alert Channels:**
+- Log-based alerts
+- Webhook notifications (optional)
+- Email notifications (optional, future)
+
+### Monitoring Dashboard
+
+**Location:** `src/app/api/monitoring/dashboard/route.ts`
+
+**Features:**
+- System health summary
+- Error rates by type
+- Provider health status
+- Cost summary
+- Performance metrics
+- Active discussions count
+- Circuit breaker status
+- Active alerts
+
+### Configuration Management
+
+**Location:** `src/lib/config/validator.ts`, `src/lib/config/feature-flags.ts`
+
+**Features:**
+- Configuration validation on startup
+- Feature flag system for gradual rollout
+- Helpful error messages for misconfiguration
+- Default value validation
+
+### Scalability Considerations
+
+**Current Architecture:**
+- SQLite database (suitable for moderate scale)
+- File-based storage (suitable for moderate scale)
+- In-memory rate limiting (with Redis option for distributed)
+
+**Future Scalability Path:**
+- Database migration: SQLite → PostgreSQL
+- File storage migration: filesystem → object storage (S3, etc.)
+- Horizontal scaling: Multiple instances with shared Redis
+- Multi-region deployment (future)
 
 **Maintained By:** Development Team

@@ -4,12 +4,14 @@
 export enum ErrorCode {
   // Rate limiting errors (1000-1099)
   RATE_LIMIT_EXCEEDED = 'RATE_LIMIT_EXCEEDED',
+  CONNECTION_LIMIT_EXCEEDED = 'CONNECTION_LIMIT_EXCEEDED',
 
   // Validation errors (1100-1199)
   VALIDATION_ERROR = 'VALIDATION_ERROR',
   INVALID_DISCUSSION_ID = 'INVALID_DISCUSSION_ID',
   INVALID_FILE_SIZE = 'INVALID_FILE_SIZE',
   INVALID_FILE_TYPE = 'INVALID_FILE_TYPE',
+  PAYLOAD_TOO_LARGE = 'PAYLOAD_TOO_LARGE',
 
   // Database errors (1200-1299)
   DATABASE_ERROR = 'DATABASE_ERROR',
@@ -61,10 +63,12 @@ export function createError(
  */
 export const ErrorMessages = {
   RATE_LIMIT_EXCEEDED: 'Rate limit exceeded. Please try again later.',
+  CONNECTION_LIMIT_EXCEEDED: 'Maximum number of concurrent connections exceeded. Please close other connections and try again.',
   VALIDATION_ERROR: 'Validation failed',
   INVALID_DISCUSSION_ID: 'Invalid discussion ID format',
   INVALID_FILE_SIZE: 'File size exceeds the maximum allowed size',
   INVALID_FILE_TYPE: 'Invalid file type. Only images and PDFs are allowed.',
+  PAYLOAD_TOO_LARGE: 'Message payload is too large. Maximum size is 1MB.',
   DISCUSSION_NOT_FOUND: 'Discussion not found',
   LLM_PROVIDER_ERROR: 'LLM provider error',
   LLM_TIMEOUT: 'Request timeout: LLM API did not respond in time',
@@ -82,4 +86,74 @@ export const ErrorMessages = {
 export function createErrorFromCode(code: ErrorCode, details?: Record<string, unknown>): AppError {
   const message = (ErrorMessages as Record<string, string>)[code] || ErrorMessages.UNKNOWN_ERROR;
   return createError(code, message, details);
+}
+
+/**
+ * Error classification types
+ */
+export enum ErrorType {
+  TRANSIENT = 'TRANSIENT', // Temporary errors that may resolve on retry
+  RECOVERABLE = 'RECOVERABLE', // Errors that can be recovered with user action
+  PERMANENT = 'PERMANENT', // Permanent errors that won't resolve
+}
+
+/**
+ * Classify an error based on its characteristics
+ */
+export function classifyError(error: unknown): ErrorType {
+  if (error instanceof Error) {
+    const code = (error as { code?: string }).code;
+    const message = error.message.toLowerCase();
+
+    // Network errors are typically transient
+    if (
+      code === 'ECONNRESET' ||
+      code === 'ETIMEDOUT' ||
+      code === 'ENOTFOUND' ||
+      code === '429' ||
+      code === '503' ||
+      code === '502' ||
+      code === '504'
+    ) {
+      return ErrorType.TRANSIENT;
+    }
+
+    // Permanent errors
+    if (
+      code === '400' ||
+      code === '401' ||
+      code === '403' ||
+      code === '404' ||
+      message.includes('invalid') ||
+      message.includes('unauthorized') ||
+      message.includes('forbidden') ||
+      message.includes('not found')
+    ) {
+      return ErrorType.PERMANENT;
+    }
+
+    // Recoverable errors (user can fix)
+    if (
+      message.includes('rate limit') ||
+      message.includes('quota') ||
+      message.includes('authentication') ||
+      message.includes('permission')
+    ) {
+      return ErrorType.RECOVERABLE;
+    }
+  }
+
+  // Check for HTTP response status codes
+  if (typeof error === 'object' && error !== null) {
+    const status = (error as { status?: number }).status;
+    if (status === 429 || status === 503 || status === 502 || status === 504) {
+      return ErrorType.TRANSIENT;
+    }
+    if (status === 400 || status === 401 || status === 403 || status === 404) {
+      return ErrorType.PERMANENT;
+    }
+  }
+
+  // Default to recoverable for unknown errors
+  return ErrorType.RECOVERABLE;
 }

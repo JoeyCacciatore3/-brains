@@ -48,7 +48,7 @@ export async function backupDiscussion(
 
   try {
     // Verify discussion exists
-    const discussion = getDiscussion(discussionId);
+    const discussion = getDiscussion(discussionId, userId);
     if (!discussion) {
       logger.warn('Discussion not found for backup', { userId, discussionId });
       return '';

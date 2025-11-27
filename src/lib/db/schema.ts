@@ -175,5 +175,35 @@ export function createDatabase(): Database.Database {
     ON users(provider, provider_id);
   `);
 
+  // Create cost_tracking table for LLM cost tracking
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cost_tracking (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      discussion_id TEXT NOT NULL,
+      user_id TEXT,
+      provider TEXT NOT NULL,
+      input_tokens INTEGER NOT NULL,
+      output_tokens INTEGER NOT NULL,
+      cost REAL NOT NULL,
+      timestamp INTEGER NOT NULL,
+      FOREIGN KEY (discussion_id) REFERENCES discussions(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Create indexes for cost_tracking
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_cost_tracking_discussion_id
+    ON cost_tracking(discussion_id);
+
+    CREATE INDEX IF NOT EXISTS idx_cost_tracking_user_id
+    ON cost_tracking(user_id);
+
+    CREATE INDEX IF NOT EXISTS idx_cost_tracking_timestamp
+    ON cost_tracking(timestamp);
+
+    CREATE INDEX IF NOT EXISTS idx_cost_tracking_provider
+    ON cost_tracking(provider);
+  `);
+
   return db;
 }

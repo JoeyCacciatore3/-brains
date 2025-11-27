@@ -14,7 +14,8 @@ describe('LLM Edge Cases', () => {
       ];
 
       const resolved = isResolved(conversation);
-      expect(typeof resolved).toBe('boolean');
+      expect(typeof resolved.resolved).toBe('boolean');
+      expect(typeof resolved.confidence).toBe('number');
     });
 
     it('should handle very short messages', () => {
@@ -26,7 +27,8 @@ describe('LLM Edge Cases', () => {
       ];
 
       const resolved = isResolved(conversation);
-      expect(typeof resolved).toBe('boolean');
+      expect(typeof resolved.resolved).toBe('boolean');
+      expect(typeof resolved.confidence).toBe('number');
     });
 
     it('should handle messages with only whitespace', () => {
@@ -38,7 +40,8 @@ describe('LLM Edge Cases', () => {
       ];
 
       const resolved = isResolved(conversation);
-      expect(typeof resolved).toBe('boolean');
+      expect(typeof resolved.resolved).toBe('boolean');
+      expect(typeof resolved.confidence).toBe('number');
     });
 
     it('should handle unicode and special characters', () => {
@@ -50,7 +53,8 @@ describe('LLM Edge Cases', () => {
       ];
 
       const resolved = isResolved(conversation);
-      expect(typeof resolved).toBe('boolean');
+      expect(typeof resolved.resolved).toBe('boolean');
+      expect(typeof resolved.confidence).toBe('number');
     });
 
     it('should handle messages with HTML-like content', () => {
@@ -62,14 +66,16 @@ describe('LLM Edge Cases', () => {
       ];
 
       const resolved = isResolved(conversation);
-      expect(typeof resolved).toBe('boolean');
+      expect(typeof resolved.resolved).toBe('boolean');
+      expect(typeof resolved.confidence).toBe('number');
     });
 
     it('should handle extremely long conversation', () => {
       const conversation = createLongConversation(100);
 
       const resolved = isResolved(conversation);
-      expect(typeof resolved).toBe('boolean');
+      expect(typeof resolved.resolved).toBe('boolean');
+      expect(typeof resolved.confidence).toBe('number');
     });
 
     it('should handle mixed case resolution keywords', () => {
@@ -81,7 +87,8 @@ describe('LLM Edge Cases', () => {
       ];
 
       const resolved = isResolved(conversation);
-      expect(typeof resolved).toBe('boolean');
+      expect(typeof resolved.resolved).toBe('boolean');
+      expect(typeof resolved.confidence).toBe('number');
     });
   });
 
@@ -241,7 +248,8 @@ describe('LLM Edge Cases', () => {
       ];
 
       const resolved = isResolved(conversation);
-      expect(typeof resolved).toBe('boolean');
+      expect(typeof resolved.resolved).toBe('boolean');
+      expect(typeof resolved.confidence).toBe('number');
     });
 
     it('should handle exactly 3 messages (below minimum)', () => {
@@ -252,7 +260,7 @@ describe('LLM Edge Cases', () => {
       ];
 
       const resolved = isResolved(conversation);
-      expect(resolved).toBe(false);
+      expect(resolved.resolved).toBe(false);
     });
 
     it('should handle max turns boundary (40 messages)', () => {
@@ -260,7 +268,8 @@ describe('LLM Edge Cases', () => {
 
       const resolved = isResolved(conversation);
       // Should trigger max turns resolution
-      expect(typeof resolved).toBe('boolean');
+      expect(resolved.resolved).toBe(true);
+      expect(resolved.reason).toBe('max_turns');
     });
   });
 });

@@ -45,8 +45,15 @@ export function ActionButtons({
   discussionId,
   isResolved = false,
 }: ActionButtonsProps) {
-  // Don't show buttons if no discussion, resolved, or disabled
-  if (!discussionId || isResolved || disabled) {
+  // Don't show buttons if no discussion or disabled
+  // Note: isResolved check removed - buttons stay visible until true consensus resolution
+  // When resolved, the resolution banner will be shown and user can start new discussion
+  if (!discussionId || disabled) {
+    return null;
+  }
+
+  // Hide buttons only when truly resolved (consensus reached)
+  if (isResolved) {
     return null;
   }
 

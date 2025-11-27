@@ -12,6 +12,7 @@ import type {
   RoundCompleteEvent,
   QuestionsGeneratedEvent,
   SummaryCreatedEvent,
+  ConversationResolvedEvent,
   // Moderator summary events removed - Moderator AI now participates in discussion
   DiscussionRound,
   QuestionSet,
@@ -40,6 +41,9 @@ interface UseSocketReturn {
   summaries: SummaryEntry[]; // All summaries created during the discussion
   waitingForAction: boolean; // Whether waiting for user action after round
   isResolved: boolean;
+  solution?: string; // Extracted solution text from resolution
+  finalizedSummary?: string; // Collaborative finalized summary when consensus reached
+  resolutionConfidence?: number; // Confidence score 0-1
   error: string | null;
   startDialogue: (topic: string, files?: FileData[], userId?: string) => void;
   submitAnswers: (roundNumber: number, answers: Record<string, string[]>) => void; // New
@@ -79,6 +83,9 @@ export function useSocket(): UseSocketReturn {
   const [summaries, setSummaries] = useState<SummaryEntry[]>([]); // All summaries created during the discussion
   const [waitingForAction, setWaitingForAction] = useState(false); // Waiting for user action after round
   const [isResolved, setIsResolved] = useState(false);
+  const [solution, setSolution] = useState<string | undefined>();
+  const [finalizedSummary, setFinalizedSummary] = useState<string | undefined>();
+  const [resolutionConfidence, setResolutionConfidence] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
 
   // Ref to store current discussionId for use in event handlers
@@ -661,7 +668,7 @@ export function useSocket(): UseSocketReturn {
         }
 
         if (data.discussionId !== currentDiscussionId) {
-          clientLogger.warn('Received message-chunk for different conversation', {
+          clientLogger.debug('Received message-chunk for different conversation (expected when switching discussions)', {
             expected: currentDiscussionId,
             received: data.discussionId,
           });
@@ -857,7 +864,7 @@ export function useSocket(): UseSocketReturn {
     // Note: 'needs-user-input' event handler removed - server never emits this event.
     // The system uses 'waitingForAction' state from 'round-complete' event instead.
 
-    socketInstance.on('conversation-resolved', (data: { discussionId: string }) => {
+    socketInstance.on('conversation-resolved', (data: ConversationResolvedEvent) => {
       // Use functional update to get the latest discussionId state
       setDiscussionId((currentDiscussionId) => {
         // Strict validation: ignore if no active conversation or discussionId mismatch
@@ -878,8 +885,15 @@ export function useSocket(): UseSocketReturn {
 
         clientLogger.info('Conversation resolved event received', {
           discussionId: data.discussionId,
+          hasSolution: !!data.solution,
+          hasFinalizedSummary: !!data.finalizedSummary,
+          confidence: data.confidence,
+          reason: data.reason,
         });
         setIsResolved(true);
+        setSolution(data.solution);
+        setFinalizedSummary(data.finalizedSummary);
+        setResolutionConfidence(data.confidence || 0);
         return currentDiscussionId; // Keep same discussionId
       });
     });
@@ -1258,6 +1272,9 @@ export function useSocket(): UseSocketReturn {
     setWaitingForAction(false);
     setCurrentMessage(null);
     setIsResolved(false);
+    setSolution(undefined);
+    setFinalizedSummary(undefined);
+    setResolutionConfidence(0);
     setError(null);
     clearStateFromStorage(); // Clear localStorage on reset
   };
@@ -1275,6 +1292,9 @@ export function useSocket(): UseSocketReturn {
     summaries,
     waitingForAction,
     isResolved,
+    solution,
+    finalizedSummary,
+    resolutionConfidence,
     error,
     startDialogue,
     submitAnswers, // New

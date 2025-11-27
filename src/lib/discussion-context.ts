@@ -4,6 +4,7 @@ import { readDiscussion } from '@/lib/discussions/file-manager';
 import { countTokens } from '@/lib/discussions/token-counter';
 import { logger } from '@/lib/logger';
 import { aiPersonas } from '@/lib/llm';
+import { validateTokenCountSync } from '@/lib/discussions/reconciliation';
 import {
   filterCompleteRounds,
   isRoundComplete,
@@ -25,13 +26,32 @@ export async function loadDiscussionContext(
 ): Promise<{
   topic: string;
   messages: ConversationMessage[]; // Legacy: kept for backward compatibility
-  rounds: DiscussionRound[]; // New: round-based structure
+  rounds: DiscussionRound[]; // New: round-based structure - ALL rounds from JSON file
   summary?: string; // Legacy: kept for backward compatibility
   currentSummary?: SummaryEntry; // New: most recent summary with metadata
   summaries: SummaryEntry[]; // New: all summaries
   tokenCount: number; // New: calculated token count for context
 }> {
+  // CRITICAL: Load ALL rounds from JSON file (source of truth for full discussion history)
+  // The JSON file contains the complete discussion history - all rounds are saved here
   const discussionData = await readDiscussion(discussionId, userId);
+
+  // CRITICAL: Verify all rounds are loaded from JSON file
+  const allRoundsCount = discussionData.rounds?.length || 0;
+  if (allRoundsCount > 0) {
+    logger.info('📚 Loaded all rounds from JSON file for LLM context', {
+      discussionId,
+      userId,
+      totalRoundsInFile: allRoundsCount,
+      roundNumbers: discussionData.rounds?.map((r) => r.roundNumber) || [],
+      hasSummary: !!discussionData.currentSummary,
+      summaryRound: discussionData.currentSummary?.roundNumber,
+      roundsAfterSummary: discussionData.currentSummary
+        ? discussionData.rounds?.filter((r) => r.roundNumber > discussionData.currentSummary!.roundNumber).length || 0
+        : allRoundsCount,
+      note: 'JSON file contains full discussion history - all rounds are available for LLM context',
+    });
+  }
 
   // Calculate token count for context
   let tokenCount = 0;
@@ -207,10 +227,56 @@ export async function loadDiscussionContext(
     messages = discussionData.messages;
   }
 
+  // Optional: Validate token count sync (can be enabled via environment variable)
+  // This helps detect file-database inconsistencies early
+  if (process.env.ENABLE_TOKEN_SYNC_VALIDATION === 'true') {
+    try {
+      const syncResult = await validateTokenCountSync(discussionId, userId, {
+        autoRepair: process.env.AUTO_REPAIR_TOKEN_SYNC === 'true',
+        tolerancePercent: 5,
+      });
+
+      if (!syncResult.inSync) {
+        logger.warn('Token count sync mismatch detected in loadDiscussionContext', {
+          discussionId,
+          userId,
+          fileTokenCount: syncResult.fileTokenCount,
+          dbTokenCount: syncResult.dbTokenCount,
+          difference: syncResult.difference,
+          differencePercent: syncResult.differencePercent,
+          repaired: syncResult.repaired,
+        });
+      }
+    } catch (error) {
+      // Don't fail context loading if validation fails - just log it
+      logger.warn('Token count sync validation failed', {
+        discussionId,
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  // CRITICAL: Return ALL rounds from JSON file
+  // The rounds array contains the complete discussion history from the JSON file
+  // This is the source of truth - all rounds are saved here and available for LLM context
+  const allRounds = discussionData.rounds || [];
+
+  logger.info('✅ Discussion context loaded with all rounds from JSON file', {
+    discussionId,
+    userId,
+    totalRounds: allRounds.length,
+    roundNumbers: allRounds.map((r) => r.roundNumber),
+    hasSummary: !!discussionData.currentSummary,
+    summaryRound: discussionData.currentSummary?.roundNumber,
+    tokenCount,
+    note: 'All rounds from JSON file are available for LLM context. Summary (if exists) represents old rounds.',
+  });
+
   return {
     topic: discussionData.topic,
     messages, // Generated on-demand from rounds (for LLM context formatting)
-    rounds: discussionData.rounds || [], // Primary source of truth
+    rounds: allRounds, // ALL rounds from JSON file - primary source of truth for full discussion history
     summary: discussionData.summary, // Legacy
     currentSummary: discussionData.currentSummary, // New
     summaries: discussionData.summaries || [], // New
@@ -219,12 +285,234 @@ export async function loadDiscussionContext(
 }
 
 /**
+ * Format summary context section for prompts
+ */
+function formatSummaryContext(
+  summaries?: SummaryEntry[],
+  currentSummary?: SummaryEntry,
+  legacySummary?: string
+): string {
+  // CRITICAL: Include all summaries in chronological order
+  // If currentSummary exists, it should be in the summaries array, so we need to avoid duplication
+  // We'll include all summaries from the array, and only add currentSummary separately if it's not in the array
+  const summariesToInclude = summaries && summaries.length > 0
+    ? summaries.sort((a, b) => a.roundNumber - b.roundNumber)
+    : [];
+
+  // Check if currentSummary is already in the summaries array (it should be)
+  const currentSummaryInArray = currentSummary && summariesToInclude.some(
+    (s) => s.roundNumber === currentSummary.roundNumber && s.summary === currentSummary.summary
+  );
+
+  // Include all summaries from the array
+  const allSummariesSection = summariesToInclude.length > 0
+    ? `\n\n## Discussion History (Summarized)\n${summariesToInclude
+        .map(
+          (s, idx) =>
+            `### Summary ${idx + 1} (Round ${s.roundNumber})\n` +
+            `Replaces rounds: ${s.replacesRounds.join(', ')}\n` +
+            `${s.summary}`
+        )
+        .join('\n\n---\n\n')}\n\n---\n`
+    : '';
+
+  // Only include currentSummary separately if it's NOT already in the summaries array
+  // This prevents duplication while handling edge cases where currentSummary might not be in the array
+  const summaryToUse = currentSummary && !currentSummaryInArray
+    ? currentSummary.summary
+    : legacySummary;
+  const summarySection = summaryToUse
+    ? `\n\n## Discussion Summary (for context)\n${summaryToUse}\n\n---\n`
+    : '';
+
+  return allSummariesSection + summarySection;
+}
+
+/**
+ * Format file information section for prompts
+ */
+function formatFileInfo(files?: FileData[]): string {
+  return files && files.length > 0
+    ? `\n\nAdditional context provided:\n${files
+        .map(
+          (file, idx) =>
+            `- File ${idx + 1}: ${file.name} (${file.type}, ${(file.size / 1024).toFixed(1)}KB)`
+        )
+        .join('\n')}`
+    : '';
+}
+
+/**
+ * Format user answers section for prompts
+ */
+function formatUserAnswersSection(
+  userAnswers?: Record<string, string[]>,
+  rounds?: DiscussionRound[]
+): string {
+  if (!userAnswers || Object.keys(userAnswers).length === 0) {
+    return '';
+  }
+
+  return `\n\n## User Input from Previous Questions\n${Object.entries(userAnswers)
+    .map(([questionId, selectedOptions]) => {
+      return `- Selected: ${selectedOptions.join(', ')}`;
+    })
+    .join('\n')}\n\n---\n`;
+}
+
+/**
+ * Format round transcript from completed and incomplete rounds
+ * CRITICAL: This formats ALL previous rounds for LLM context
+ * - completedRounds: All complete rounds from previous rounds (from JSON file)
+ * - incompleteRound: Current round being processed (if any)
+ * The JSON file contains the complete discussion history - all rounds are included here
+ */
+function formatRoundTranscript(
+  completedRounds: DiscussionRound[],
+  incompleteRound?: DiscussionRound
+): string {
+  let transcript = '';
+
+  // Format ALL completed rounds from JSON file
+  // These represent the full discussion history available to LLMs
+  if (completedRounds.length > 0) {
+    transcript = completedRounds
+      .map((round) => {
+        // Include all three AI responses in each round for full context
+        return `[Round ${round.roundNumber}]\n${round.analyzerResponse.persona}: ${round.analyzerResponse.content}\n\n${round.solverResponse.persona}: ${round.solverResponse.content}\n\n${round.moderatorResponse.persona}: ${round.moderatorResponse.content}`;
+      })
+      .join('\n\n---\n\n');
+  }
+
+  // If there's an incomplete round, add partial responses to transcript
+  if (incompleteRound) {
+    if (transcript) {
+      transcript += '\n\n---\n\n';
+    }
+    transcript += `[Round ${incompleteRound.roundNumber}]\n${incompleteRound.analyzerResponse.persona}: ${incompleteRound.analyzerResponse.content}`;
+    if (incompleteRound.solverResponse?.content) {
+      transcript += `\n\n${incompleteRound.solverResponse.persona}: ${incompleteRound.solverResponse.content}`;
+    }
+    if (incompleteRound.moderatorResponse?.content) {
+      transcript += `\n\n${incompleteRound.moderatorResponse.persona}: ${incompleteRound.moderatorResponse.content}`;
+    }
+  }
+
+  return transcript;
+}
+
+/**
+ * Format first message prompt for Analyzer starting Round 1
+ */
+function formatFirstMessagePrompt(
+  topic: string,
+  summaryContext: string,
+  userAnswersSection: string,
+  fileInfo: string
+): string {
+  return `You are starting a collaborative discussion about: "${topic}"${summaryContext}${userAnswersSection}${fileInfo}
+
+Provide your initial analysis or approach to this topic (2-4 paragraphs). Set the stage for a productive back-and-forth conversation. Be engaging and thoughtful - you're starting a dialogue that will evolve through multiple exchanges.
+
+IMPORTANT: Always complete your full thought within the token limit. Write comprehensive responses that fully develop your ideas. Ensure your response is complete and well-formed with proper punctuation and a complete thought. Do not leave sentences unfinished or thoughts incomplete.`;
+}
+
+/**
+ * Format user input prompt when user has provided input
+ */
+function formatUserInputPrompt(
+  topic: string,
+  summaryContext: string,
+  fileInfo: string,
+  conversationTranscript: string,
+  userMessage: ConversationMessage
+): string {
+  return `Topic: "${topic}"${summaryContext}${fileInfo}
+
+Full conversation so far:
+
+${conversationTranscript}
+
+---
+
+The user has provided the following input:
+
+"${userMessage.content}"
+
+Please respond to the user's input. Address their question or concern directly. If they're providing clarification or additional context, incorporate that into your response. Continue the collaborative dialogue by building on the conversation so far and the user's input. Reference specific points from the conversation and the user's message. Write 2-4 paragraphs that feel conversational and readable.`;
+}
+
+/**
+ * Format new round prompt for Analyzer starting a new round
+ */
+function formatNewRoundPrompt(
+  topic: string,
+  summaryContext: string,
+  fileInfo: string,
+  conversationTranscript: string,
+  currentRoundNumber: number,
+  exchangeNumber: number,
+  lastCompletedRoundNumber: number,
+  otherPersona: 'Solver AI' | 'Analyzer AI' | 'Moderator AI',
+  lastMessage: ConversationMessage
+): string {
+  return `Topic: "${topic}"${summaryContext}${fileInfo}
+
+Full conversation so far:
+
+${conversationTranscript}
+
+---
+
+You are now starting Round ${currentRoundNumber} of this discussion (Exchange ${exchangeNumber}). The previous round (Round ${lastCompletedRoundNumber}) concluded with ${otherPersona} saying:
+
+"${lastMessage.content}"
+
+Begin this new round by building on the discussion so far. Reference key points from previous rounds, introduce new perspectives, or deepen the analysis. This is a collaborative dialogue - engage thoughtfully with the conversation history while moving the discussion forward. Write 2-4 paragraphs that are comprehensive, well-developed, and contribute meaningfully to the dialogue. Always complete your full thought - ensure your response is complete and well-formed.`;
+}
+
+/**
+ * Format continuation prompt for ongoing round responses
+ */
+function formatContinuationPrompt(
+  topic: string,
+  summaryContext: string,
+  fileInfo: string,
+  conversationTranscript: string,
+  roundNum: number,
+  exchangeNumber: number,
+  otherPersona: 'Solver AI' | 'Analyzer AI' | 'Moderator AI',
+  lastMessage: ConversationMessage
+): string {
+  return `Topic: "${topic}"${summaryContext}${fileInfo}
+
+Full conversation so far:
+
+${conversationTranscript}
+
+---
+
+You are now in Round ${roundNum}, Exchange ${exchangeNumber}. ${otherPersona} just said:
+
+"${lastMessage.content}"
+
+Respond directly to what they just said. Reference specific points they made. Build on their ideas, challenge assumptions constructively, ask clarifying questions, or add new perspectives. This is a real dialogue - make it feel like you're actively engaging with their thoughts, not just making isolated statements. Use natural transitions and references to create a flowing conversation. Write 2-4 paragraphs that are comprehensive, well-developed, and feel conversational and readable. Always complete your full thought - ensure your response is complete and well-formed within the token limit.`;
+}
+
+/**
  * Formats discussion context for LLM prompt
  * Returns the user message content that should be sent to the LLM
  * Enhanced to support round-based structure with summaries
+ *
+ * CRITICAL: The rounds parameter contains ALL rounds from the JSON file
+ * - JSON file is the source of truth and contains the complete discussion history
+ * - All previous rounds are included in the LLM context
+ * - If summary exists, it represents old rounds and only rounds after summary are included
+ * - If no summary, ALL rounds from JSON file are included
+ *
  * @param respondingPersonaName - The name of the AI persona that will be responding ('Solver AI', 'Analyzer AI', or 'Moderator AI')
  * @param summary - Optional summary to include at the beginning for context (legacy)
- * @param rounds - Optional rounds array (new round-based structure)
+ * @param rounds - ALL rounds from JSON file (complete discussion history)
  * @param currentSummary - Optional current summary entry with metadata (new)
  * @param userAnswers - Optional user answers to questions from previous rounds
  * @param currentRoundNumber - Optional current round number to help detect new round starts
@@ -242,47 +530,13 @@ export function formatLLMPrompt(
   userAnswers?: Record<string, string[]>, // New: questionId -> selected option IDs
   currentRoundNumber?: number // New: current round number
 ): string {
-  // Format file information for text-based providers
-  const fileInfo =
-    files && files.length > 0
-      ? `\n\nAdditional context provided:\n${files
-          .map(
-            (file, idx) =>
-              `- File ${idx + 1}: ${file.name} (${file.type}, ${(file.size / 1024).toFixed(1)}KB)`
-          )
-          .join('\n')}`
-      : '';
+  // Format sections using helper functions
+  const fileInfo = formatFileInfo(files);
+  const summaryContext = formatSummaryContext(summaries, currentSummary, summary);
+  const userAnswersSection = formatUserAnswersSection(userAnswers, rounds);
 
-  // Include all summaries in chronological order (before current summary)
-  const allSummariesSection =
-    summaries && summaries.length > 0
-      ? `\n\n## Discussion History (Summarized)\n${summaries
-          .sort((a, b) => a.roundNumber - b.roundNumber)
-          .map(
-            (s, idx) =>
-              `### Summary ${idx + 1} (Round ${s.roundNumber})\n` +
-              `Replaces rounds: ${s.replacesRounds.join(', ')}\n` +
-              `${s.summary}`
-          )
-          .join('\n\n---\n\n')}\n\n---\n`
-      : '';
-
-  // Use currentSummary if available (new), fallback to legacy summary
+  // Extract summary sections for use in prompts
   const summaryToUse = currentSummary?.summary || summary;
-  const summarySection = summaryToUse
-    ? `\n\n## Discussion Summary (for context)\n${summaryToUse}\n\n---\n`
-    : '';
-
-  // Format user answers if provided
-  const userAnswersSection =
-    userAnswers && Object.keys(userAnswers).length > 0
-      ? `\n\n## User Input from Previous Questions\n${Object.entries(userAnswers)
-          .map(([, selectedOptions]) => {
-            // Find question text (would need to search rounds, simplified here)
-            return `- Selected: ${selectedOptions.join(', ')}`;
-          })
-          .join('\n')}\n\n---\n`
-      : '';
 
   // CRITICAL: If this is truly the first message, return immediately
   // Don't process any rounds or messages - Analyzer should start fresh
@@ -293,11 +547,7 @@ export function formatLLMPrompt(
       messagesCount: conversationMessages.length,
       currentRoundNumber,
     });
-    return `You are starting a collaborative discussion about: "${topic}"${allSummariesSection}${summarySection}${userAnswersSection}${fileInfo}
-
-Provide your initial analysis or approach to this topic (2-4 paragraphs). Set the stage for a productive back-and-forth conversation. Be engaging and thoughtful - you're starting a dialogue that will evolve through multiple exchanges.
-
-IMPORTANT: Always complete your full thought within the token limit. Write comprehensive responses that fully develop your ideas. Ensure your response is complete and well-formed with proper punctuation and a complete thought. Do not leave sentences unfinished or thoughts incomplete.`;
+    return formatFirstMessagePrompt(topic, summaryContext, userAnswersSection, fileInfo);
   }
 
   // Use rounds if available (new structure), fallback to legacy messages
@@ -328,73 +578,36 @@ IMPORTANT: Always complete your full thought within the token limit. Write compr
     // CRITICAL: Sort rounds by roundNumber to ensure consistent order
     const sortedRounds = sortRoundsByRoundNumber(rounds);
 
-    // Format rounds as conversation transcript
+    // CRITICAL: Include ALL previous rounds in LLM context
+    // - If summary exists: Summary represents old rounds, include summary + all rounds after summary
+    // - If no summary: Include ALL rounds from JSON file
+    // The JSON file is the source of truth and contains the complete discussion history
     let roundsToInclude = currentSummary
-      ? sortedRounds.filter((r) => r.roundNumber > currentSummary.roundNumber) // Only rounds after summary
-      : sortedRounds; // All rounds if no summary
+      ? sortedRounds.filter((r) => r.roundNumber > currentSummary.roundNumber) // Summary replaces old rounds, include rounds after summary
+      : sortedRounds; // No summary: Include ALL rounds from JSON file (full history)
 
-    // CRITICAL: Filter incomplete rounds based on who is responding
-    // NOTE: Rounds should already be pre-filtered in generateAIResponse, but we keep this
-    // as a safety measure to ensure Analyzer never sees incomplete rounds
-    if (respondingPersonaName === 'Analyzer AI') {
-      // Analyzer is starting a new round - only include complete rounds
-      // This ensures Analyzer responds to Moderator from previous round, never to Solver
-      const originalCount = roundsToInclude.length;
-      roundsToInclude = filterCompleteRounds(roundsToInclude);
+    logger.info('📖 Including rounds in LLM context', {
+      respondingPersonaName,
+      totalRoundsInFile: sortedRounds.length,
+      roundsIncluded: roundsToInclude.length,
+      hasSummary: !!currentSummary,
+      summaryRound: currentSummary?.roundNumber,
+      roundsAfterSummary: currentSummary
+        ? sortedRounds.filter((r) => r.roundNumber > currentSummary.roundNumber).length
+        : sortedRounds.length,
+      includedRoundNumbers: roundsToInclude.map((r) => r.roundNumber),
+      note: 'LLM context includes all available rounds from JSON file (summary replaces old rounds if exists)',
+    });
 
-      // SAFETY CHECK: Double-check that no Solver responses are in incomplete rounds
-      // This is a defensive check since rounds should already be filtered upstream
-      const roundsWithSolverButIncomplete = roundsToInclude.filter((r) => {
-        const hasSolver = !!r.solverResponse?.content?.trim();
-        const hasModerator = !!r.moderatorResponse?.content?.trim();
-        const hasAnalyzer = !!r.analyzerResponse?.content?.trim();
-        return hasSolver && (!hasModerator || !hasAnalyzer);
-      });
+    // ALL LLMs see ALL rounds - no filtering based on persona
+    // Execution order (Analyzer → Solver → Moderator) is enforced separately
+    // and does not affect what context each LLM can see
 
-      if (roundsWithSolverButIncomplete.length > 0) {
-        logger.error('🚨 CRITICAL BUG: Analyzer context contains incomplete rounds with Solver responses!', {
-          originalRoundsCount: originalCount,
-          filteredRoundsCount: roundsToInclude.length,
-          currentRoundNumber,
-          respondingPersonaName,
-          incompleteRoundsWithSolver: roundsWithSolverButIncomplete.map((r) => ({
-            roundNumber: r.roundNumber,
-            hasAnalyzer: !!r.analyzerResponse?.content?.trim(),
-            hasSolver: !!r.solverResponse?.content?.trim(),
-            hasModerator: !!r.moderatorResponse?.content?.trim(),
-          })),
-          note: 'This should not happen if pre-filtering in generateAIResponse is working correctly',
-        });
-        // Remove these incomplete rounds as a safety measure
-        roundsToInclude = roundsToInclude.filter((r) => {
-          const hasSolver = !!r.solverResponse?.content?.trim();
-          const hasModerator = !!r.moderatorResponse?.content?.trim();
-          const hasAnalyzer = !!r.analyzerResponse?.content?.trim();
-          return !(hasSolver && (!hasModerator || !hasAnalyzer));
-        });
-      }
-
-      if (originalCount !== roundsToInclude.length) {
-        logger.warn('formatLLMPrompt: Additional filtering required for Analyzer (should not happen)', {
-          originalRoundsCount: originalCount,
-          filteredRoundsCount: roundsToInclude.length,
-          currentRoundNumber,
-          respondingPersonaName,
-          filteredOut: originalCount - roundsToInclude.length,
-          safetyCheckPassed: roundsWithSolverButIncomplete.length === 0,
-          note: 'Rounds should already be filtered in generateAIResponse - this suggests a bug',
-        });
-      }
-    }
-
-    // Check for incomplete round in CURRENT round only (not for Analyzer starting new round)
-    // Incomplete round means: Analyzer responded but Solver or Moderator hasn't yet
-    // This is only relevant for Solver and Moderator, not for Analyzer starting a new round
-    const incompleteRound = respondingPersonaName !== 'Analyzer AI'
-      ? roundsToInclude.find(
-          (r) => r.roundNumber === currentRoundNumber && isRoundIncomplete(r)
-        )
-      : null;
+    // Check for incomplete round in current round
+    // Incomplete round means: Some responses exist but not all three
+    const incompleteRound = roundsToInclude.find(
+      (r) => r.roundNumber === currentRoundNumber && isRoundIncomplete(r)
+    );
 
     // Build transcript from completed rounds (all three AIs have responded)
     // Exclude incomplete round to prevent duplication
@@ -421,26 +634,11 @@ IMPORTANT: Always complete your full thought within the token limit. Write compr
         });
       }
 
-      conversationTranscript = completedRounds
-        .map((round) => {
-          return `[Round ${round.roundNumber}]\n${round.analyzerResponse.persona}: ${round.analyzerResponse.content}\n\n${round.solverResponse.persona}: ${round.solverResponse.content}\n\n${round.moderatorResponse.persona}: ${round.moderatorResponse.content}`;
-        })
-        .join('\n\n---\n\n');
-    }
-
-    // If there's an incomplete round, add partial responses to transcript
-    // Order: Analyzer -> Solver -> Moderator
-    if (incompleteRound) {
-      if (conversationTranscript) {
-        conversationTranscript += '\n\n---\n\n';
-      }
-      conversationTranscript += `[Round ${incompleteRound.roundNumber}]\n${incompleteRound.analyzerResponse.persona}: ${incompleteRound.analyzerResponse.content}`;
-      if (incompleteRound.solverResponse?.content) {
-        conversationTranscript += `\n\n${incompleteRound.solverResponse.persona}: ${incompleteRound.solverResponse.content}`;
-      }
-      if (incompleteRound.moderatorResponse?.content) {
-        conversationTranscript += `\n\n${incompleteRound.moderatorResponse.persona}: ${incompleteRound.moderatorResponse.content}`;
-      }
+      // Format completed rounds using helper function
+      conversationTranscript = formatRoundTranscript(completedRounds, incompleteRound || undefined);
+    } else if (incompleteRound) {
+      // Only incomplete round, no completed rounds
+      conversationTranscript = formatRoundTranscript([], incompleteRound || undefined);
     }
 
     // Determine last message and exchange number based on rounds structure
@@ -698,19 +896,7 @@ IMPORTANT: Always complete your full thought within the token limit. Write compr
 
   // If the last message is from a user, the AI should respond to the user's input
   if (lastMessage && lastMessage.persona === 'User') {
-    return `Topic: "${topic}"${allSummariesSection}${summarySection}${fileInfo}
-
-Full conversation so far:
-
-${conversationTranscript}
-
----
-
-The user has provided the following input:
-
-"${lastMessage.content}"
-
-Please respond to the user's input. Address their question or concern directly. If they're providing clarification or additional context, incorporate that into your response. Continue the collaborative dialogue by building on the conversation so far and the user's input. Reference specific points from the conversation and the user's message. Write 2-4 paragraphs that feel conversational and readable.`;
+    return formatUserInputPrompt(topic, summaryContext, fileInfo, conversationTranscript, lastMessage);
   }
 
   // Determine which AI should respond based on rounds or responding persona
@@ -889,19 +1075,17 @@ Please respond to the user's input. Address their question or concern directly. 
         formulaResult,
         verifiedCorrect: exchangeNumber === correctExchangeNumber && exchangeNumber === formulaResult,
       });
-      return `Topic: "${topic}"${allSummariesSection}${summarySection}${fileInfo}
-
-Full conversation so far:
-
-${conversationTranscript}
-
----
-
-You are now starting Round ${currentRoundNumber} of this discussion (Exchange ${exchangeNumber}). The previous round (Round ${lastCompletedRoundNumber}) concluded with ${otherPersona} saying:
-
-"${lastMessage.content}"
-
-Begin this new round by building on the discussion so far. Reference key points from previous rounds, introduce new perspectives, or deepen the analysis. This is a collaborative dialogue - engage thoughtfully with the conversation history while moving the discussion forward. Write 2-4 paragraphs that are comprehensive, well-developed, and contribute meaningfully to the dialogue. Always complete your full thought - ensure your response is complete and well-formed.`;
+      return formatNewRoundPrompt(
+        topic,
+        summaryContext,
+        fileInfo,
+        conversationTranscript,
+        currentRoundNumber!,
+        exchangeNumber,
+        lastCompletedRoundNumber,
+        otherPersona,
+        lastMessage
+      );
     }
 
     // CRITICAL FIX: Use currentRoundNumber directly if available, otherwise calculate from exchangeNumber
@@ -936,19 +1120,16 @@ Begin this new round by building on the discussion so far. Reference key points 
       });
     }
 
-    return `Topic: "${topic}"${allSummariesSection}${summarySection}${fileInfo}
-
-Full conversation so far:
-
-${conversationTranscript}
-
----
-
-You are now in Round ${roundNum}, Exchange ${exchangeNumber}. ${otherPersona} just said:
-
-"${lastMessage.content}"
-
-Respond directly to what they just said. Reference specific points they made. Build on their ideas, challenge assumptions constructively, ask clarifying questions, or add new perspectives. This is a real dialogue - make it feel like you're actively engaging with their thoughts, not just making isolated statements. Use natural transitions and references to create a flowing conversation. Write 2-4 paragraphs that are comprehensive, well-developed, and feel conversational and readable. Always complete your full thought - ensure your response is complete and well-formed within the token limit.`;
+    return formatContinuationPrompt(
+      topic,
+      summaryContext,
+      fileInfo,
+      conversationTranscript,
+      roundNum,
+      exchangeNumber,
+      otherPersona,
+      lastMessage
+    );
   }
 
   // Fallback if no last message (shouldn't happen, but handle gracefully)
@@ -963,14 +1144,10 @@ Respond directly to what they just said. Reference specific points they made. Bu
 
   // If this is truly the first message (Analyzer starting Round 1), use first message prompt
   if (isFirstMessage || (currentRoundNumber === 1 && respondingPersonaName === 'Analyzer AI' && conversationTranscript === '')) {
-    return `You are starting a collaborative discussion about: "${topic}"${allSummariesSection}${summarySection}${userAnswersSection}${fileInfo}
-
-Provide your initial analysis or approach to this topic (2-4 paragraphs). Set the stage for a productive back-and-forth conversation. Be engaging and thoughtful - you're starting a dialogue that will evolve through multiple exchanges.
-
-IMPORTANT: Always complete your full thought within the token limit. Write comprehensive responses that fully develop your ideas. Ensure your response is complete and well-formed with proper punctuation and a complete thought. Do not leave sentences unfinished or thoughts incomplete.`;
+    return formatFirstMessagePrompt(topic, summaryContext, userAnswersSection, fileInfo);
   }
 
-  return `Topic: "${topic}"${allSummariesSection}${summarySection}${fileInfo}
+  return `Topic: "${topic}"${summaryContext}${fileInfo}
 
 Full conversation so far:
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import DOMPurify from 'isomorphic-dompurify';
 
 // UUID validation regex (RFC 4122)
 const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -132,10 +133,82 @@ export const dialogueRequestSchema = z.object({
   topic: z
     .string()
     .min(10, 'Topic must be at least 10 characters')
-    .max(1000, 'Topic must be less than 1000 characters'),
+    .max(1000, 'Topic must be less than 1000 characters')
+    .transform((val) => sanitizeTopic(val)), // Sanitize before validation length check
   files: z.array(fileDataSchema).max(5, 'Maximum 5 files allowed').optional(),
   userId: z.string().regex(uuidRegex, 'Invalid user ID format').optional(),
 });
+
+/**
+ * Sanitize general user input to prevent XSS attacks
+ * Strips HTML tags, normalizes Unicode, and escapes special characters
+ * @param input - User input to sanitize
+ * @returns Sanitized input safe for display and storage
+ */
+export function sanitizeInput(input: string): string {
+  if (!input || typeof input !== 'string') {
+    return '';
+  }
+
+  // Step 1: Strip all HTML tags using DOMPurify
+  let clean = DOMPurify.sanitize(input, { ALLOWED_TAGS: [] });
+
+  // Step 2: Normalize Unicode (NFKC - Compatibility Decomposition followed by Canonical Composition)
+  clean = clean.normalize('NFKC');
+
+  // Step 3: Escape any remaining special characters
+  clean = clean
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;')
+    .replace(/\//g, '&#x2F;');
+
+  // Step 4: Limit length to prevent abuse
+  const MAX_INPUT_LENGTH = 10000;
+  if (clean.length > MAX_INPUT_LENGTH) {
+    clean = clean.substring(0, MAX_INPUT_LENGTH);
+  }
+
+  return clean.trim();
+}
+
+/**
+ * Sanitize topic input specifically for discussions
+ * Strips HTML tags, normalizes Unicode, and ensures length is within topic limits
+ * @param topic - Topic string to sanitize
+ * @returns Sanitized topic safe for use
+ */
+export function sanitizeTopic(topic: string): string {
+  if (!topic || typeof topic !== 'string') {
+    return '';
+  }
+
+  // Step 1: Strip all HTML tags using DOMPurify
+  let clean = DOMPurify.sanitize(topic, { ALLOWED_TAGS: [] });
+
+  // Step 2: Normalize Unicode
+  clean = clean.normalize('NFKC');
+
+  // Step 3: Escape special characters
+  clean = clean
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;')
+    .replace(/\//g, '&#x2F;');
+
+  // Step 4: Trim and limit to topic max length (1000 chars per validation schema)
+  clean = clean.trim();
+  const MAX_TOPIC_LENGTH = 1000;
+  if (clean.length > MAX_TOPIC_LENGTH) {
+    clean = clean.substring(0, MAX_TOPIC_LENGTH);
+  }
+
+  return clean;
+}
 
 /**
  * Sanitize file name to prevent path traversal attacks

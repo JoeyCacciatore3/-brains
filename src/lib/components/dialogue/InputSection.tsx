@@ -35,7 +35,7 @@ export function InputSection({
   const [files, setFiles] = useState<File[]>([]);
   const [localError, setLocalError] = useState<string | null>(null);
   const [isEncoding, setIsEncoding] = useState(false);
-  const [encodingProgress, setEncodingProgress] = useState<EncodingProgress | null>(null);
+  const [_encodingProgress, setEncodingProgress] = useState<EncodingProgress | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const workerRef = useRef<Worker | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -160,7 +160,7 @@ export function InputSection({
     }
   };
 
-  const removeFile = (index: number) => {
+  const _removeFile = (index: number) => {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   };
 

@@ -63,7 +63,7 @@ describe('LLM Workflow Integration', () => {
       ];
 
       const resolved = isResolved(messages);
-      expect(resolved).toBe(true);
+      expect(resolved.resolved).toBe(true);
     });
 
     it('should process multiple rounds and detect resolution', async () => {
@@ -82,7 +82,7 @@ describe('LLM Workflow Integration', () => {
       ];
 
       const resolved = isResolved(messages);
-      expect(resolved).toBe(true);
+      expect(resolved.resolved).toBe(true);
     });
 
     it('should detect user input needed during dialogue', () => {
@@ -259,7 +259,7 @@ describe('LLM Workflow Integration', () => {
         lastRound.moderatorResponse,
       ];
       const resolved = isResolved(messages);
-      expect(resolved).toBe(true);
+      expect(resolved.resolved).toBe(true);
 
       // Step 3: Generate summary if needed
       const tokenCount = 5000;

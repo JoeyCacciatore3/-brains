@@ -18,8 +18,13 @@ export interface DiscussionData {
 
 /**
  * Format discussion data as JSON for LLM context
+ * CRITICAL: This saves ALL rounds to the JSON file - the complete discussion history
+ * The JSON file is the source of truth for LLM context and contains all previous rounds
+ * LLMs access this file to get full context of the entire discussion
  */
 export function formatDiscussionJSON(data: DiscussionData): string {
+  // JSON.stringify saves the entire DiscussionData object, including ALL rounds
+  // This ensures the complete discussion history is preserved for LLM context
   return JSON.stringify(data, null, 2);
 }
 

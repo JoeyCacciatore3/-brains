@@ -5,7 +5,6 @@
  */
 
 import type { DiscussionRound, ConversationMessage } from '@/types';
-import { logger } from '@/lib/logger';
 import { calculateTurnNumber, getPersonaFromTurnNumber } from './round-utils';
 
 export interface ValidationResult {

@@ -14,7 +14,9 @@ describe('isResolved', () => {
         timestamp: new Date().toISOString(),
       },
     ];
-    expect(isResolved(conversation)).toBe(false);
+    const result = isResolved(conversation);
+    expect(result.resolved).toBe(false);
+    expect(result.confidence).toBe(0);
   });
 
   it('should return true when max turns reached', () => {
@@ -29,7 +31,10 @@ describe('isResolved', () => {
         created_at: Date.now(),
       };
     });
-    expect(isResolved(conversation)).toBe(true);
+    const result = isResolved(conversation);
+    expect(result.resolved).toBe(true);
+    expect(result.reason).toBe('max_turns');
+    expect(result.confidence).toBe(0.5);
   });
 
   it('should return true when resolution keywords are present', () => {
@@ -83,7 +88,10 @@ describe('isResolved', () => {
         timestamp: new Date().toISOString(),
       },
     ];
-    expect(isResolved(conversation)).toBe(true);
+    const result = isResolved(conversation);
+    expect(result.resolved).toBe(true);
+    expect(result.confidence).toBeGreaterThan(0);
+    expect(result.reason).toBeDefined();
   });
 
   it('should return false when no resolution indicators', () => {
@@ -113,7 +121,8 @@ describe('isResolved', () => {
         timestamp: new Date().toISOString(),
       },
     ];
-    expect(isResolved(conversation)).toBe(false);
+    const result = isResolved(conversation);
+    expect(result.resolved).toBe(false);
   });
 
   it('should filter out negated resolution keywords', () => {
@@ -167,7 +176,8 @@ describe('isResolved', () => {
         timestamp: new Date().toISOString(),
       },
     ];
-    expect(isResolved(conversation)).toBe(false);
+    const result = isResolved(conversation);
+    expect(result.resolved).toBe(false);
   });
 
   it('should detect multiple agreement patterns', () => {
@@ -221,7 +231,9 @@ describe('isResolved', () => {
         timestamp: new Date().toISOString(),
       },
     ];
-    expect(isResolved(conversation)).toBe(true);
+    const result = isResolved(conversation);
+    expect(result.resolved).toBe(true);
+    expect(result.confidence).toBeGreaterThan(0);
   });
 
   it('should detect convergence (shorter messages)', () => {
@@ -278,12 +290,16 @@ describe('isResolved', () => {
     // Should detect convergence if messages get shorter
     // Note: This depends on RESOLUTION_CONVERGENCE_THRESHOLD config
     const result = isResolved(conversation);
-    expect(typeof result).toBe('boolean');
+    expect(result.resolved).toBeDefined();
+    expect(typeof result.resolved).toBe('boolean');
+    expect(typeof result.confidence).toBe('number');
   });
 
   it('should handle empty messages array', () => {
     const conversation: ConversationMessage[] = [];
-    expect(isResolved(conversation)).toBe(false);
+    const result = isResolved(conversation);
+    expect(result.resolved).toBe(false);
+    expect(result.confidence).toBe(0);
   });
 
   it('should handle single message', () => {
@@ -297,7 +313,9 @@ describe('isResolved', () => {
         timestamp: new Date().toISOString(),
       },
     ];
-    expect(isResolved(conversation)).toBe(false);
+    const result = isResolved(conversation);
+    expect(result.resolved).toBe(false);
+    expect(result.confidence).toBe(0);
   });
 
   it('should detect resolution with strong keywords (3+)', () => {
@@ -375,7 +393,9 @@ describe('isResolved', () => {
         timestamp: new Date().toISOString(),
       },
     ];
-    expect(isResolved(conversation)).toBe(true);
+    const result = isResolved(conversation);
+    expect(result.resolved).toBe(true);
+    expect(result.confidence).toBeGreaterThan(0);
   });
 
   it('should handle special characters and unicode', () => {
@@ -429,6 +449,85 @@ describe('isResolved', () => {
         timestamp: new Date().toISOString(),
       },
     ];
-    expect(isResolved(conversation)).toBe(true);
+    const result = isResolved(conversation);
+    expect(result.resolved).toBe(true);
+    expect(result.confidence).toBeGreaterThan(0);
+  });
+
+  it('should extract solution from conversation with solution text', () => {
+    const conversation: ConversationMessage[] = [
+      {
+        persona: 'Solver AI',
+        content: 'Let me think about this problem.',
+        discussion_id: 'test',
+        created_at: Date.now(),
+        turn: 1,
+        timestamp: new Date().toISOString(),
+      },
+      {
+        persona: 'Analyzer AI',
+        content: 'I see what you mean.',
+        discussion_id: 'test',
+        created_at: Date.now(),
+        turn: 1,
+        timestamp: new Date().toISOString(),
+      },
+      {
+        persona: 'Moderator AI',
+        content: 'This is an interesting discussion.',
+        discussion_id: 'test',
+        created_at: Date.now(),
+        turn: 1,
+        timestamp: new Date().toISOString(),
+      },
+      {
+        persona: 'Solver AI',
+        content: 'The solution is to implement a caching layer for better performance.',
+        discussion_id: 'test',
+        created_at: Date.now(),
+        turn: 2,
+        timestamp: new Date().toISOString(),
+      },
+      {
+        persona: 'Analyzer AI',
+        content: 'I agree, that makes sense.',
+        discussion_id: 'test',
+        created_at: Date.now(),
+        turn: 2,
+        timestamp: new Date().toISOString(),
+      },
+      {
+        persona: 'Moderator AI',
+        content: 'I concur with this approach.',
+        discussion_id: 'test',
+        created_at: Date.now(),
+        turn: 2,
+        timestamp: new Date().toISOString(),
+      },
+    ];
+    const result = isResolved(conversation);
+    expect(result.resolved).toBe(true);
+    // Solution should be extracted from Solver AI response
+    if (result.solution) {
+      expect(result.solution.length).toBeLessThanOrEqual(500);
+      expect(result.solution.toLowerCase()).toContain('caching');
+    }
+  });
+
+  it('should return confidence score between 0 and 1', () => {
+    const conversation: ConversationMessage[] = Array.from({ length: 60 }, (_, i) => {
+      const personas = ['Solver AI', 'Analyzer AI', 'Moderator AI'];
+      return {
+        discussion_id: 'test',
+        persona: personas[i % 3] as 'Solver AI' | 'Analyzer AI' | 'Moderator AI',
+        content: `Message ${i}`,
+        turn: Math.floor(i / 3) + 1,
+        timestamp: new Date().toISOString(),
+        created_at: Date.now(),
+      };
+    });
+    const result = isResolved(conversation);
+    expect(result.confidence).toBeGreaterThanOrEqual(0);
+    expect(result.confidence).toBeLessThanOrEqual(1);
   });
 });

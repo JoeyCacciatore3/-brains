@@ -58,6 +58,10 @@ export interface MessageCompleteEvent {
  */
 export interface ConversationResolvedEvent {
   discussionId: string; // Standardized: always discussionId
+  solution?: string; // NEW: Extracted solution text
+  confidence: number; // NEW: Confidence score 0-1
+  reason?: string; // NEW: Resolution reason
+  finalizedSummary?: string; // NEW: Collaborative finalized summary when consensus reached
 }
 
 export interface SocketErrorEvent {
@@ -111,6 +115,7 @@ export interface QuestionOption {
 export interface RoundCompleteEvent {
   discussionId: string; // Standardized: always discussionId
   round: DiscussionRound;
+  currentRoundNumber?: number; // Round number for client state management
 }
 
 export interface QuestionsGeneratedEvent {
@@ -139,4 +144,16 @@ export interface ProceedDialogueEvent {
 export interface GenerateQuestionsEvent {
   discussionId: string;
   roundNumber?: number;
+}
+
+/**
+ * Socket.IO socket.data interface
+ * Extends Socket.IO's socket.data with custom properties
+ * Note: Socket.IO's Socket.data is typed as 'any' by default, so we define our structure here
+ * and use type assertions when accessing socket.data: (socket.data as SocketData)
+ */
+export interface SocketData {
+  previousDiscussionId?: string;
+  userId?: string;
+  [key: string]: unknown;
 }

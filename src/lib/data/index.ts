@@ -72,8 +72,8 @@ export async function createDiscussion(
 /**
  * Get discussion metadata from database
  */
-export function getDiscussionMetadata(discussionId: string): Discussion | null {
-  return getDiscussion(discussionId);
+export function getDiscussionMetadata(discussionId: string, userId: string): Discussion | null {
+  return getDiscussion(discussionId, userId);
 }
 
 /**
@@ -84,7 +84,7 @@ export async function getFullDiscussion(
   discussionId: string,
   userId: string
 ): Promise<{ metadata: Discussion; content: DiscussionData } | null> {
-  const metadata = getDiscussion(discussionId);
+  const metadata = getDiscussion(discussionId, userId);
   if (!metadata) {
     return null;
   }

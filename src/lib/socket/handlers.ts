@@ -49,9 +49,12 @@ import {
   sanitizeFileName,
 } from '@/lib/validation';
 import { verifyFileFromBase64 } from '@/lib/file-verification';
-import { checkRateLimit } from '@/lib/rate-limit';
+import { checkRateLimit, checkStartDialogueRateLimit } from '@/lib/rate-limit';
+import { getUserRateLimitTier } from '@/lib/rate-limit-tier';
 import { logger } from '@/lib/logger';
+import { SERVER_CONFIG } from '@/lib/config';
 import { authenticateSocket, getSocketUserId, isSocketAuthenticated } from '@/lib/socket/auth-middleware';
+import { shouldEmitError, emitErrorToRoomWithDeduplication } from '@/lib/socket/error-deduplication';
 import {
   checkConnectionRateLimit,
   checkConnectionCountLimit,
@@ -118,6 +121,64 @@ import { DIALOGUE_CONFIG } from '@/lib/config';
 const MAX_TURNS = DIALOGUE_CONFIG.MAX_TURNS;
 
 /**
+ * Helper function to emit errors with deduplication
+ * @param socket - Socket instance
+ * @param error - Error object, error code string, or AppError object
+ * @param discussionId - Optional discussion ID
+ * @param operation - Operation name
+ */
+function emitErrorWithDeduplication(
+  socket: Socket,
+  error: { code: ErrorCode | string; message: string; discussionId?: string } | string | { message: string; code: string; discussionId?: string },
+  discussionId?: string,
+  operation?: string
+): void {
+  // Extract error code and message from various input formats
+  let errorCode: ErrorCode | string;
+  let errorMessage: string;
+  let errorDiscussionId: string | undefined;
+
+  if (typeof error === 'string') {
+    errorCode = error;
+    errorMessage = error;
+    errorDiscussionId = discussionId;
+  } else if ('code' in error && 'message' in error) {
+    errorCode = error.code;
+    errorMessage = error.message;
+    errorDiscussionId = error.discussionId ?? discussionId;
+  } else {
+    // Fallback for unexpected formats
+    errorCode = ErrorCode.UNKNOWN_ERROR;
+    errorMessage = 'An unknown error occurred';
+    errorDiscussionId = discussionId;
+  }
+
+  // Log error before deduplication check
+  logger.error('Socket error occurred', {
+    error: errorMessage,
+    errorCode,
+    discussionId: errorDiscussionId,
+    operation: operation || 'unknown',
+    socketId: socket.id,
+  });
+
+  // Check if error should be emitted (deduplication)
+  if (shouldEmitError(errorCode, errorDiscussionId, operation)) {
+    socket.emit('error', {
+      code: errorCode,
+      message: errorMessage,
+      discussionId: errorDiscussionId,
+    });
+  } else {
+    logger.debug('Error deduplicated, not emitting', {
+      code: errorCode,
+      discussionId: errorDiscussionId,
+      operation,
+    });
+  }
+}
+
+/**
  * Extract client IP address from socket connection
  * Handles proxy scenarios (x-forwarded-for header)
  * @param socket - Socket.IO socket instance
@@ -155,10 +216,15 @@ export function setupSocketHandlers(io: Server) {
     const rateLimitExceeded = await checkConnectionRateLimit(clientIp);
     if (rateLimitExceeded) {
       logger.warn('Connection rate limit exceeded', { socketId: socket.id, ip: clientIp });
-      socket.emit('error', {
-        message: 'Too many connection attempts. Please wait a moment before trying again.',
-        code: 'RATE_LIMIT_EXCEEDED',
-      });
+      emitErrorWithDeduplication(
+        socket,
+        {
+          code: ErrorCode.RATE_LIMIT_EXCEEDED,
+          message: 'Too many connection attempts. Please wait a moment before trying again.',
+        },
+        undefined,
+        'connection'
+      );
       socket.disconnect(true);
       return;
     }
@@ -171,10 +237,15 @@ export function setupSocketHandlers(io: Server) {
         ip: clientIp,
         count,
       });
-      socket.emit('error', {
-        message: 'Maximum number of concurrent connections exceeded. Please close other connections and try again.',
-        code: 'CONNECTION_LIMIT_EXCEEDED',
-      });
+      emitErrorWithDeduplication(
+        socket,
+        {
+          code: ErrorCode.CONNECTION_LIMIT_EXCEEDED,
+          message: 'Maximum number of concurrent connections exceeded. Please close other connections and try again.',
+        },
+        undefined,
+        'connection'
+      );
       socket.disconnect(true);
       return;
     }
@@ -205,20 +276,20 @@ export function setupSocketHandlers(io: Server) {
       // Check payload size
       if (checkPayloadSize(eventData)) {
         logger.warn('Payload size exceeded', { socketId: socket.id });
-        socket.emit('error', {
+        emitErrorWithDeduplication(socket, {
+          code: ErrorCode.PAYLOAD_TOO_LARGE,
           message: 'Message payload is too large. Maximum size is 1MB.',
-          code: 'PAYLOAD_TOO_LARGE',
-        });
+        }, undefined, 'checkMessageLimits');
         return false;
       }
 
       // Check message rate limit
       if (checkMessageRateLimit(socket)) {
         logger.warn('Message rate limit exceeded', { socketId: socket.id });
-        socket.emit('error', {
+        emitErrorWithDeduplication(socket, {
+          code: ErrorCode.RATE_LIMIT_EXCEEDED,
           message: 'Too many messages. Please slow down.',
-          code: 'RATE_LIMIT_EXCEEDED',
-        });
+        }, undefined, 'checkMessageLimits');
         return false;
       }
 
@@ -237,17 +308,27 @@ export function setupSocketHandlers(io: Server) {
         fileCount: data.files?.length || 0,
       });
       try {
+        // Check operation-specific rate limit
+        const clientIpStart = extractClientIP(socket);
+        const rateLimitCheck = await checkStartDialogueRateLimit(clientIpStart);
+        if (rateLimitCheck.exceeded) {
+          const error = createErrorFromCode(ErrorCode.RATE_LIMIT_EXCEEDED, {
+            operation: 'start-dialogue',
+            remaining: rateLimitCheck.remaining,
+            reset: rateLimitCheck.reset,
+          });
+          emitErrorWithDeduplication(socket, error, undefined, 'start-dialogue');
+          if (ack) ack({ error: error.message });
+          return;
+        }
         // Validate files BEFORE rate limiting (don't count invalid requests toward rate limit)
         if (data.files && data.files.length > 0) {
           for (const file of data.files) {
             if (!file.name || !file.type || file.size === undefined) {
               const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, { field: 'file' });
-            socket.emit('error', {
-              message: 'Invalid file data provided. Please try uploading the file again.',
-              code: error.code,
-            });
-            if (ack) ack({ error: 'Invalid file data provided' });
-            return;
+              emitErrorWithDeduplication(socket, error, undefined, 'start-dialogue');
+              if (ack) ack({ error: 'Invalid file data provided' });
+              return;
             }
 
             // Sanitize file name to prevent path traversal attacks
@@ -260,10 +341,10 @@ export function setupSocketHandlers(io: Server) {
                 fileName: file.name,
                 size: file.size,
               });
-              socket.emit('error', {
-                message: fileValidation.error || `File "${file.name}" validation failed.`,
+              emitErrorWithDeduplication(socket, {
                 code: error.code,
-              });
+                message: fileValidation.error || `File "${file.name}" validation failed.`,
+              }, undefined, 'start-dialogue');
               return;
             }
 
@@ -275,10 +356,10 @@ export function setupSocketHandlers(io: Server) {
                   fileName: file.name,
                   size: base64Size,
                 });
-                socket.emit('error', {
-                  message: `File "${file.name}" base64 encoding exceeds the ${BASE64_SIZE_LIMIT / (1024 * 1024)}MB limit. Please use a smaller file.`,
+                emitErrorWithDeduplication(socket, {
                   code: error.code,
-                });
+                  message: `File "${file.name}" base64 encoding exceeds the ${BASE64_SIZE_LIMIT / (1024 * 1024)}MB limit. Please use a smaller file.`,
+                }, undefined, 'start-dialogue');
                 return;
               }
 
@@ -288,10 +369,10 @@ export function setupSocketHandlers(io: Server) {
                 const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, {
                   field: 'file.base64',
                 });
-                socket.emit('error', {
-                  message: `File "${file.name}" has invalid base64 encoding: ${base64FormatValidation.error}`,
+                emitErrorWithDeduplication(socket, {
                   code: error.code,
-                });
+                  message: `File "${file.name}" has invalid base64 encoding: ${base64FormatValidation.error}`,
+                }, undefined, 'start-dialogue');
                 return;
               }
 
@@ -302,10 +383,10 @@ export function setupSocketHandlers(io: Server) {
                   const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, {
                     field: 'file.content',
                   });
-                  socket.emit('error', {
-                    message: `File "${file.name}" content does not match declared type "${file.type}". The file may be corrupted or the type may be incorrect.`,
+                  emitErrorWithDeduplication(socket, {
                     code: error.code,
-                  });
+                    message: `File "${file.name}" content does not match declared type "${file.type}". The file may be corrupted or the type may be incorrect.`,
+                  }, undefined, 'start-dialogue');
                   return;
                 }
               } catch (verificationError) {
@@ -317,10 +398,10 @@ export function setupSocketHandlers(io: Server) {
                 const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, {
                   field: 'file.content',
                 });
-                socket.emit('error', {
-                  message: `File "${file.name}" verification failed. Please ensure the file is valid and try again.`,
+                emitErrorWithDeduplication(socket, {
                   code: error.code,
-                });
+                  message: `File "${file.name}" verification failed. Please ensure the file is valid and try again.`,
+                }, undefined, 'start-dialogue');
                 return;
               }
             }
@@ -334,10 +415,7 @@ export function setupSocketHandlers(io: Server) {
         } catch (validationError) {
           logger.error('Error during validation', { error: validationError, socketId: socket.id });
           const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, { validationError });
-          socket.emit('error', {
-            message: 'Invalid request format. Please check your input and try again.',
-            code: error.code,
-          });
+          emitErrorWithDeduplication(socket, error, undefined, 'start-dialogue');
           return;
         }
 
@@ -346,38 +424,32 @@ export function setupSocketHandlers(io: Server) {
             .map((e) => `${e.path.join('.')}: ${e.message}`)
             .join(', ');
           const validationError = createErrorFromCode(ErrorCode.VALIDATION_ERROR, { errors });
-          socket.emit('error', {
-            message: `Invalid input: ${errors}. Please correct and try again.`,
+          emitErrorWithDeduplication(socket, {
             code: validationError.code,
-          });
+            message: `Invalid input: ${errors}. Please correct and try again.`,
+          }, undefined, 'start-dialogue');
           return;
         }
 
         const { topic, files = [], userId } = validationResult.data;
 
         // Rate limiting check (after validation - only count valid requests)
-        const clientIp = extractClientIP(socket);
-        const rateLimitExceeded = await checkRateLimit(clientIp);
+        const clientIpProceed = extractClientIP(socket);
+        const effectiveUserId2 = userId || getSocketUserId(socket);
+        const userTier = getUserRateLimitTier(effectiveUserId2, socket.data.user ? { user: socket.data.user } : null);
+        const rateLimitExceeded = await checkRateLimit(clientIpProceed, userTier);
         if (rateLimitExceeded) {
-          logger.warn('Rate limit exceeded', { socketId: socket.id, clientIp });
-          const { getRemainingRequests, getRateLimitInfo } = await import('@/lib/rate-limit');
-          const rateLimitInfo = getRateLimitInfo(clientIp);
-          const remaining = getRemainingRequests(clientIp);
-          const resetTime = new Date(rateLimitInfo.reset);
+          logger.warn('Rate limit exceeded', { socketId: socket.id, clientIp: clientIpProceed, tier: userTier });
+          const { getRateLimitInfo } = await import('@/lib/rate-limit');
+          const rateLimitInfo = getRateLimitInfo(clientIpProceed, userTier);
+          const _resetTime = new Date(rateLimitInfo.reset);
           const secondsUntilReset = Math.ceil((rateLimitInfo.reset - Date.now()) / 1000);
 
           const error = createErrorFromCode(ErrorCode.RATE_LIMIT_EXCEEDED, { clientIp });
-          socket.emit('error', {
-            message: `Rate limit exceeded. Please try again in ${secondsUntilReset} second${secondsUntilReset !== 1 ? 's' : ''}.`,
+          emitErrorWithDeduplication(socket, {
             code: error.code,
-            rateLimit: {
-              limit: rateLimitInfo.limit,
-              remaining,
-              resetWindow: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),
-              resetTime: resetTime.toISOString(),
-              secondsUntilReset,
-            },
-          });
+            message: `Rate limit exceeded. Please try again in ${secondsUntilReset} second${secondsUntilReset !== 1 ? 's' : ''}.`,
+          }, undefined, 'start-dialogue');
           return;
         }
 
@@ -394,10 +466,10 @@ export function setupSocketHandlers(io: Server) {
           const error = createErrorFromCode(ErrorCode.NO_LLM_PROVIDER_AVAILABLE, {
             errors: providerAvailability.errors,
           });
-          socket.emit('error', {
-            message: `No AI providers are configured. Please set at least one API key (GROQ_API_KEY, MISTRAL_API_KEY, or OPENROUTER_API_KEY). Errors: ${errorDetails}`,
+          emitErrorWithDeduplication(socket, {
             code: error.code,
-          });
+            message: `No AI providers are configured. Please set at least one API key (GROQ_API_KEY, MISTRAL_API_KEY, or OPENROUTER_API_KEY). Errors: ${errorDetails}`,
+          }, undefined, 'start-dialogue');
           return;
         }
 
@@ -420,7 +492,7 @@ export function setupSocketHandlers(io: Server) {
 
         // Always use round-based discussion system
         // Get user ID from authenticated socket or use provided userId
-        const effectiveUserId = userId || getSocketUserId(socket);
+        const effectiveUserId3 = userId || getSocketUserId(socket);
 
         // Atomically check for active discussion to prevent race conditions
         // This prevents multiple requests from creating discussions simultaneously
@@ -429,57 +501,68 @@ export function setupSocketHandlers(io: Server) {
 
         try {
           // Atomically check for active discussion in database
-          // Uses BEGIN IMMEDIATE to get exclusive lock and prevent race conditions
-          const activeDiscussion = checkActiveDiscussionAtomically(effectiveUserId);
+          // Uses file locking to get exclusive lock and prevent race conditions
+          // In development, use shorter stuck threshold (5 minutes) to auto-resolve stuck discussions faster
+          const isDev = SERVER_CONFIG.NODE_ENV !== 'production';
+          const stuckThreshold = isDev ? 5 * 60 * 1000 : 60 * 60 * 1000; // 5 min in dev, 1 hour in prod
+          const activeDiscussion = await checkActiveDiscussionAtomically(effectiveUserId3, true, stuckThreshold);
 
           if (activeDiscussion) {
             // Active discussion exists
             hasActiveDiscussion = true;
             logger.warn('User attempted to start new discussion with active one', {
-              userId: effectiveUserId,
+              userId: effectiveUserId3,
               activeDiscussionId: activeDiscussion.id,
               socketId: socket.id,
             });
             const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, {
               reason: 'active_discussion_exists',
             });
-            socket.emit('error', {
+            emitErrorWithDeduplication(socket, {
+              code: error.code,
               message:
                 'You already have an active discussion. Please resolve or delete your current discussion before starting a new one.',
-              code: error.code,
-            });
+            }, undefined, 'start-dialogue');
             return; // Prevent creating new discussion
           }
 
           // No active discussion, create files first (source of truth), then sync to database
           const fileResult = await syncFileAndDatabase(
-            () => createDiscussionFiles(effectiveUserId, topic),
+            () => createDiscussionFiles(effectiveUserId3, topic),
             (result) =>
-              createDiscussion(effectiveUserId, topic, result.jsonPath, result.mdPath, result.id),
-            { userId: effectiveUserId, operation: 'createDiscussion' }
+              createDiscussion(effectiveUserId3, topic, result.jsonPath, result.mdPath, result.id),
+            { userId: effectiveUserId3, operation: 'createDiscussion' }
           );
           const discussionId = fileResult.id;
 
           // Get the discussion from database to pass to processDiscussionDialogueRounds
           // This ensures the discussion exists before processing
-          const discussion = getDiscussion(discussionId, effectiveUserId);
+          const discussion = getDiscussion(discussionId, effectiveUserId3);
           if (!discussion) {
             logger.error('Discussion not found immediately after creation', {
               discussionId,
-              userId: effectiveUserId,
+              userId: effectiveUserId3,
               socketId: socket.id,
             });
             const error = createErrorFromCode(ErrorCode.INTERNAL_ERROR, { discussionId });
-            socket.emit('error', {
-              discussionId,
-              message: 'Failed to create discussion. Please try again.',
-              code: error.code,
-            });
+            emitErrorWithDeduplication(socket, error, discussionId, 'start-dialogue');
             return;
           }
 
-          // Join discussion room
+          // Leave previous discussion room if exists, then join new discussion room
+          const previousDiscussionId = socket.data?.previousDiscussionId;
+          if (previousDiscussionId && previousDiscussionId !== discussionId) {
+            socket.leave(previousDiscussionId);
+            logger.debug('Left previous discussion room', {
+              socketId: socket.id,
+              previousDiscussionId,
+              newDiscussionId: discussionId,
+            });
+          }
           socket.join(discussionId);
+          // Store current discussionId for future cleanup
+          if (!socket.data) socket.data = {};
+          socket.data.previousDiscussionId = discussionId;
 
           // Emit discussion started
           socket.emit('discussion-started', {
@@ -494,7 +577,7 @@ export function setupSocketHandlers(io: Server) {
 
           logger.info('Discussion started', {
             discussionId,
-            userId: effectiveUserId,
+            userId: effectiveUserId3,
             socketId: socket.id,
             isAnonymous: !userId,
           });
@@ -502,7 +585,7 @@ export function setupSocketHandlers(io: Server) {
           // Start the dialogue loop (using round-based processing)
           logger.info('Starting dialogue processing (round-based)', {
             discussionId,
-            userId: effectiveUserId,
+            userId: effectiveUserId3,
             socketId: socket.id,
           });
           try {
@@ -510,7 +593,7 @@ export function setupSocketHandlers(io: Server) {
               io,
               socket,
               discussionId,
-              effectiveUserId,
+              effectiveUserId3,
               topic,
               files || [],
               discussion
@@ -520,37 +603,41 @@ export function setupSocketHandlers(io: Server) {
               error: dialogueError instanceof Error ? dialogueError.message : String(dialogueError),
               errorStack: dialogueError instanceof Error ? dialogueError.stack : undefined,
               discussionId,
-              userId: effectiveUserId,
+              userId: effectiveUserId3,
               socketId: socket.id,
             });
             // Emit error with discussionId
             const error = createErrorFromCode(ErrorCode.INTERNAL_ERROR, { discussionId });
-            io.to(discussionId).emit('error', {
-              discussionId: discussionId,
-              message:
-                dialogueError instanceof Error
-                  ? dialogueError.message
-                  : 'Failed to process dialogue. Please try again.',
-              code: error.code,
-            });
+            emitErrorToRoomWithDeduplication(
+              io,
+              discussionId,
+              {
+                code: error.code,
+                message:
+                  dialogueError instanceof Error
+                    ? dialogueError.message
+                    : 'Failed to process dialogue. Please try again.',
+              },
+              'process-dialogue-rounds'
+            );
             throw dialogueError;
           }
         } catch (error) {
           logger.error('Error creating discussion', {
             error,
-            userId: effectiveUserId,
+            userId: effectiveUserId3,
             socketId: socket.id,
           });
           const errorObj = createErrorFromCode(ErrorCode.INTERNAL_ERROR, {
-            userId: effectiveUserId,
+            userId: effectiveUserId3,
           });
-          socket.emit('error', {
+          emitErrorWithDeduplication(socket, {
+            code: errorObj.code,
             message:
               error instanceof Error
                 ? error.message
                 : 'Failed to create discussion. Please try again.',
-            code: errorObj.code,
-          });
+          }, undefined, 'start-dialogue');
           return;
         }
       } catch (error) {
@@ -565,12 +652,12 @@ export function setupSocketHandlers(io: Server) {
             ? (error as { discussionId?: string }).discussionId
             : undefined;
         const errorObj = createErrorFromCode(ErrorCode.INTERNAL_ERROR, { discussionId });
-        socket.emit('error', {
-          discussionId,
+        emitErrorWithDeduplication(socket, {
+          code: errorObj.code,
           message:
             error instanceof Error ? error.message : 'Failed to start dialogue. Please try again.',
-          code: errorObj.code,
-        });
+          discussionId,
+        }, discussionId, 'start-dialogue');
       }
     });
 
@@ -598,15 +685,10 @@ export function setupSocketHandlers(io: Server) {
           const rateLimitInfo = getRateLimitInfo(clientIp);
           const secondsUntilReset = Math.ceil((rateLimitInfo.reset - Date.now()) / 1000);
           const error = createErrorFromCode(ErrorCode.RATE_LIMIT_EXCEEDED, { clientIp });
-          socket.emit('error', {
-            message: `Rate limit exceeded. Please try again in ${secondsUntilReset} second${secondsUntilReset !== 1 ? 's' : ''}.`,
+          emitErrorWithDeduplication(socket, {
             code: error.code,
-            rateLimit: {
-              limit: rateLimitInfo.limit,
-              remaining: rateLimitInfo.remaining,
-              secondsUntilReset,
-            },
-          });
+            message: `Rate limit exceeded. Please try again in ${secondsUntilReset} second${secondsUntilReset !== 1 ? 's' : ''}.`,
+          }, data?.discussionId, 'submit-answers');
           return;
         }
 
@@ -614,28 +696,19 @@ export function setupSocketHandlers(io: Server) {
 
         if (!discussionId) {
           const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, { field: 'discussionId' });
-          socket.emit('error', {
-            message: 'No discussion ID provided.',
-            code: error.code,
-          });
+          emitErrorWithDeduplication(socket, error, undefined, 'submit-answers');
           return;
         }
 
         if (!roundNumber || roundNumber < 1) {
           const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, { field: 'roundNumber' });
-          socket.emit('error', {
-            message: 'Invalid round number.',
-            code: error.code,
-          });
+          emitErrorWithDeduplication(socket, error, discussionId, 'submit-answers');
           return;
         }
 
         if (!answers || Object.keys(answers).length === 0) {
           const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, { field: 'answers' });
-          socket.emit('error', {
-            message: 'No answers provided.',
-            code: error.code,
-          });
+          emitErrorWithDeduplication(socket, error, discussionId, 'submit-answers');
           return;
         }
 
@@ -650,18 +723,23 @@ export function setupSocketHandlers(io: Server) {
           const notFoundError = createErrorFromCode(ErrorCode.DISCUSSION_NOT_FOUND, {
             discussionId,
           });
-          socket.emit('error', {
-            discussionId: discussionId,
-            message: 'Discussion not found. Please start a new dialogue.',
+          emitErrorWithDeduplication(socket, {
             code: notFoundError.code,
-          });
+            message: 'Discussion not found. Please start a new dialogue.',
+            discussionId,
+          }, discussionId, 'submit-answers');
           return;
         }
 
         // Verify user owns the discussion
         if (!verifyDiscussionOwnership(discussionId, userId)) {
           const authError = createAuthorizationError(discussionId);
-          socket.emit('error', authError);
+          emitErrorWithDeduplication(
+            socket,
+            { code: authError.code, message: authError.message, discussionId: authError.discussionId },
+            discussionId,
+            'submit-answers'
+          );
           return;
         }
 
@@ -693,12 +771,12 @@ export function setupSocketHandlers(io: Server) {
         logger.error('Error handling answer submission', { error, socketId: socket.id });
         const discussionId = data?.discussionId;
         const errorObj = createErrorFromCode(ErrorCode.INTERNAL_ERROR, { discussionId });
-        socket.emit('error', {
-          discussionId: discussionId,
+        emitErrorWithDeduplication(socket, {
+          code: errorObj.code,
           message:
             error instanceof Error ? error.message : 'Failed to process answers. Please try again.',
-          code: errorObj.code,
-        });
+          discussionId,
+        }, discussionId, 'submit-answers');
       }
     });
 
@@ -725,15 +803,10 @@ export function setupSocketHandlers(io: Server) {
           const rateLimitInfo = getRateLimitInfo(clientIp);
           const secondsUntilReset = Math.ceil((rateLimitInfo.reset - Date.now()) / 1000);
           const error = createErrorFromCode(ErrorCode.RATE_LIMIT_EXCEEDED, { clientIp });
-          socket.emit('error', {
-            message: `Rate limit exceeded. Please try again in ${secondsUntilReset} second${secondsUntilReset !== 1 ? 's' : ''}.`,
+          emitErrorWithDeduplication(socket, {
             code: error.code,
-            rateLimit: {
-              limit: rateLimitInfo.limit,
-              remaining: rateLimitInfo.remaining,
-              secondsUntilReset,
-            },
-          });
+            message: `Rate limit exceeded. Please try again in ${secondsUntilReset} second${secondsUntilReset !== 1 ? 's' : ''}.`,
+          }, data?.discussionId, 'proceed-dialogue');
           return;
         }
 
@@ -741,10 +814,7 @@ export function setupSocketHandlers(io: Server) {
 
         if (!discussionId) {
           const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, { field: 'discussionId' });
-          socket.emit('error', {
-            message: 'No discussion ID provided.',
-            code: error.code,
-          });
+          emitErrorWithDeduplication(socket, error, undefined, 'proceed-dialogue');
           return;
         }
 
@@ -759,18 +829,23 @@ export function setupSocketHandlers(io: Server) {
           const notFoundError = createErrorFromCode(ErrorCode.DISCUSSION_NOT_FOUND, {
             discussionId,
           });
-          socket.emit('error', {
-            discussionId: discussionId,
-            message: 'Discussion not found. Please start a new dialogue.',
+          emitErrorWithDeduplication(socket, {
             code: notFoundError.code,
-          });
+            message: 'Discussion not found. Please start a new dialogue.',
+            discussionId,
+          }, discussionId, 'proceed-dialogue');
           return;
         }
 
         // Verify user owns the discussion
         if (!verifyDiscussionOwnership(discussionId, userId)) {
           const authError = createAuthorizationError(discussionId);
-          socket.emit('error', authError);
+          emitErrorWithDeduplication(
+            socket,
+            { code: authError.code, message: authError.message, discussionId: authError.discussionId },
+            discussionId,
+            'proceed-dialogue'
+          );
           if (ack) ack({ error: authError.message });
           return;
         }
@@ -794,14 +869,14 @@ export function setupSocketHandlers(io: Server) {
         logger.error('Error handling proceed-dialogue', { error, socketId: socket.id });
         const discussionId = data?.discussionId;
         const errorObj = createErrorFromCode(ErrorCode.INTERNAL_ERROR, { discussionId });
-        socket.emit('error', {
-          discussionId: discussionId,
+        emitErrorWithDeduplication(socket, {
+          code: errorObj.code,
           message:
             error instanceof Error
               ? error.message
               : 'Failed to proceed with dialogue. Please try again.',
-          code: errorObj.code,
-        });
+          discussionId,
+        }, discussionId, 'proceed-dialogue');
       }
     });
 
@@ -829,15 +904,10 @@ export function setupSocketHandlers(io: Server) {
           const rateLimitInfo = getRateLimitInfo(clientIp);
           const secondsUntilReset = Math.ceil((rateLimitInfo.reset - Date.now()) / 1000);
           const error = createErrorFromCode(ErrorCode.RATE_LIMIT_EXCEEDED, { clientIp });
-          socket.emit('error', {
-            message: `Rate limit exceeded. Please try again in ${secondsUntilReset} second${secondsUntilReset !== 1 ? 's' : ''}.`,
+          emitErrorWithDeduplication(socket, {
             code: error.code,
-            rateLimit: {
-              limit: rateLimitInfo.limit,
-              remaining: rateLimitInfo.remaining,
-              secondsUntilReset,
-            },
-          });
+            message: `Rate limit exceeded. Please try again in ${secondsUntilReset} second${secondsUntilReset !== 1 ? 's' : ''}.`,
+          }, data?.discussionId, 'generate-questions');
           return;
         }
 
@@ -845,10 +915,7 @@ export function setupSocketHandlers(io: Server) {
 
         if (!discussionId) {
           const error = createErrorFromCode(ErrorCode.VALIDATION_ERROR, { field: 'discussionId' });
-          socket.emit('error', {
-            message: 'No discussion ID provided.',
-            code: error.code,
-          });
+          emitErrorWithDeduplication(socket, error, undefined, 'generate-questions');
           return;
         }
 
@@ -863,11 +930,11 @@ export function setupSocketHandlers(io: Server) {
           const notFoundError = createErrorFromCode(ErrorCode.DISCUSSION_NOT_FOUND, {
             discussionId,
           });
-          socket.emit('error', {
-            discussionId: discussionId,
-            message: 'Discussion not found. Please start a new dialogue.',
+          emitErrorWithDeduplication(socket, {
             code: notFoundError.code,
-          });
+            message: 'Discussion not found. Please start a new dialogue.',
+            discussionId,
+          }, discussionId, 'generate-questions');
           return;
         }
 
@@ -897,11 +964,11 @@ export function setupSocketHandlers(io: Server) {
             reason: 'round_not_found',
             roundNumber: targetRoundNumber,
           });
-          socket.emit('error', {
-            discussionId: discussionId,
-            message: `Round ${targetRoundNumber} not found.`,
+          emitErrorWithDeduplication(socket, {
             code: error.code,
-          });
+            message: `Round ${targetRoundNumber} not found.`,
+            discussionId,
+          }, discussionId, 'generate-questions');
           return;
         }
 
@@ -949,14 +1016,14 @@ export function setupSocketHandlers(io: Server) {
         logger.error('Error handling generate-questions', { error, socketId: socket.id });
         const discussionId = data?.discussionId;
         const errorObj = createErrorFromCode(ErrorCode.INTERNAL_ERROR, { discussionId });
-        socket.emit('error', {
-          discussionId: discussionId,
+        emitErrorWithDeduplication(socket, {
+          code: errorObj.code,
           message:
             error instanceof Error
               ? error.message
               : 'Failed to generate questions. Please try again.',
-          code: errorObj.code,
-        });
+          discussionId,
+        }, discussionId, 'generate-questions');
       }
     });
 
@@ -998,10 +1065,15 @@ async function loadDiscussionDataAndContext(
       discussionId,
       userId,
     });
-    io.to(discussionId).emit('error', {
-      discussionId: discussionId,
-      message: 'Failed to load discussion data. Please try again.',
-    });
+    emitErrorToRoomWithDeduplication(
+      io,
+      discussionId,
+      {
+        code: ErrorCode.INTERNAL_ERROR,
+        message: 'Failed to load discussion data. Please try again.',
+      },
+      'load-discussion-data'
+    );
     throw error;
   }
 
@@ -1034,10 +1106,15 @@ async function loadDiscussionDataAndContext(
       discussionId,
       userId,
     });
-    io.to(discussionId).emit('error', {
-      discussionId: discussionId,
-      message: 'Failed to load discussion context. Please try again.',
-    });
+    emitErrorToRoomWithDeduplication(
+      io,
+      discussionId,
+      {
+        code: ErrorCode.INTERNAL_ERROR,
+        message: 'Failed to load discussion context. Please try again.',
+      },
+      'load-discussion-context'
+    );
     throw error;
   }
 
@@ -1190,92 +1267,42 @@ async function processSingleRound(
       },
       note: 'This indicates a race condition or incorrect context loading - Analyzer should never see current round',
     });
-    // Remove current round from context to prevent contamination
-    discussionContext.rounds = (discussionContext.rounds || []).filter(
-      (r) => r.roundNumber !== currentRoundNumber
-    );
-    logger.warn('🔧 FIXED: Removed current round from discussionContext to prevent Analyzer contamination', {
-      discussionId,
-      roundNumber: currentRoundNumber,
-    });
-  }
+  // ALL LLMs see ALL rounds - no filtering needed
+  // Execution order is enforced separately and does not affect context visibility
+  const contextForAnalyzer = discussionContext;
 
-  const filteredContextForAnalyzer = {
-    ...discussionContext,
-    rounds: filterRoundsForPersona(
-      discussionContext.rounds || [],
-      'Analyzer AI',
-      currentRoundNumber
-    ),
-  };
-
-  // CRITICAL AUDIT: Log context details for Analyzer
+  // Log context details for Analyzer
   logger.info('🔍 AUDIT: Analyzer context before execution', {
     discussionId,
     roundNumber: currentRoundNumber,
-    originalRoundsCount: discussionContext.rounds?.length || 0,
-    filteredRoundsCount: filteredContextForAnalyzer.rounds.length,
-    filteredRoundNumbers: filteredContextForAnalyzer.rounds.map((r) => r.roundNumber),
-    hasCurrentRoundInFiltered: filteredContextForAnalyzer.rounds.some(
+    roundsCount: contextForAnalyzer.rounds?.length || 0,
+    roundNumbers: contextForAnalyzer.rounds?.map((r) => r.roundNumber) || [],
+    hasCurrentRound: contextForAnalyzer.rounds?.some(
       (r) => r.roundNumber === currentRoundNumber
-    ),
-    lastCompleteRound: filteredContextForAnalyzer.rounds.length > 0
+    ) || false,
+    lastRound: contextForAnalyzer.rounds && contextForAnalyzer.rounds.length > 0
       ? {
-          roundNumber: filteredContextForAnalyzer.rounds[filteredContextForAnalyzer.rounds.length - 1].roundNumber,
-          lastPersona: filteredContextForAnalyzer.rounds[filteredContextForAnalyzer.rounds.length - 1].moderatorResponse?.persona,
-          lastPersonaContent: filteredContextForAnalyzer.rounds[filteredContextForAnalyzer.rounds.length - 1].moderatorResponse?.content?.substring(0, 100),
+          roundNumber: contextForAnalyzer.rounds[contextForAnalyzer.rounds.length - 1].roundNumber,
+          lastPersona: contextForAnalyzer.rounds[contextForAnalyzer.rounds.length - 1].moderatorResponse?.persona,
+          lastPersonaContent: contextForAnalyzer.rounds[contextForAnalyzer.rounds.length - 1].moderatorResponse?.content?.substring(0, 100),
         }
       : null,
-    // CRITICAL: Check if any Solver responses exist in filtered context (should be NONE for Analyzer)
-    hasSolverInContext: filteredContextForAnalyzer.rounds.some((r) =>
+    // Note: All rounds are included in context for all LLMs
+    hasSolverInContext: contextForAnalyzer.rounds?.some((r) =>
       r.solverResponse?.content?.trim() && r.roundNumber !== currentRoundNumber
-    ),
-    solverResponsesInContext: filteredContextForAnalyzer.rounds
-      .filter((r) => r.solverResponse?.content?.trim() && r.roundNumber !== currentRoundNumber)
+    ) || false,
+    solverResponsesInContext: contextForAnalyzer.rounds
+      ?.filter((r) => r.solverResponse?.content?.trim() && r.roundNumber !== currentRoundNumber)
       .map((r) => ({
         roundNumber: r.roundNumber,
         solverContent: r.solverResponse?.content?.substring(0, 50),
-      })),
+      })) || [],
     timestamp: new Date().toISOString(),
   });
 
-  // CRITICAL AUDIT: Verify no Solver responses in Analyzer's context
-  const solverResponsesInAnalyzerContext = filteredContextForAnalyzer.rounds.filter(
-    (r) => r.solverResponse?.content?.trim() && r.roundNumber !== currentRoundNumber
-  );
-  if (solverResponsesInAnalyzerContext.length > 0) {
-    logger.error('🚨 CRITICAL BUG: Solver responses found in Analyzer context!', {
-      discussionId,
-      roundNumber: currentRoundNumber,
-      solverResponsesCount: solverResponsesInAnalyzerContext.length,
-      solverResponseRounds: solverResponsesInAnalyzerContext.map((r) => r.roundNumber),
-      note: 'Analyzer should NEVER see Solver responses - this indicates filtering failed',
-    });
-    throw new Error('CRITICAL: Solver responses found in Analyzer context - filtering failed');
-  }
-
-  if (filteredContextForAnalyzer.rounds.length !== (discussionContext.rounds?.length || 0)) {
-    const incompleteRoundsCount = (discussionContext.rounds?.length || 0) - filteredContextForAnalyzer.rounds.length;
-    logger.info('processSingleRound: Filtered incomplete rounds for Analyzer using standardized function', {
-      discussionId,
-      roundNumber: currentRoundNumber,
-      originalRoundsCount: discussionContext.rounds?.length || 0,
-      filteredRoundsCount: filteredContextForAnalyzer.rounds.length,
-      incompleteRoundsCount,
-      // Log details of filtered incomplete rounds for debugging
-      incompleteRounds: (discussionContext.rounds || [])
-        .filter((r) => isRoundIncomplete(r))
-        .map((r) => ({
-          roundNumber: r.roundNumber,
-          hasAnalyzer: !!r.analyzerResponse?.content?.trim(),
-          hasSolver: !!r.solverResponse?.content?.trim(),
-          hasModerator: !!r.moderatorResponse?.content?.trim(),
-        })),
-    });
-  }
-
-  // Check for incomplete rounds that might have content (from previous failed attempts)
-  const hasAnyRoundContent = filteredContextForAnalyzer.rounds?.some((round) => {
+  // ALL LLMs see ALL rounds - no filtering needed
+  // Check for rounds that might have content (from previous attempts)
+  const hasAnyRoundContent = contextForAnalyzer.rounds?.some((round) => {
     return (
       (round.analyzerResponse?.content && round.analyzerResponse.content.trim().length > 0) ||
       (round.solverResponse?.content && round.solverResponse.content.trim().length > 0) ||
@@ -1289,8 +1316,8 @@ async function processSingleRound(
   // 3. No messages exist
   const isFirstMessage = isFirstRound &&
     !hasAnyRoundContent &&
-    (filteredContextForAnalyzer.rounds?.length === 0 || !filteredContextForAnalyzer.rounds) &&
-    (filteredContextForAnalyzer.messages?.length === 0 || !filteredContextForAnalyzer.messages);
+    (contextForAnalyzer.rounds?.length === 0 || !contextForAnalyzer.rounds) &&
+    (contextForAnalyzer.messages?.length === 0 || !contextForAnalyzer.messages);
 
   // CRITICAL FIX 1.1: Calculate expected turn BEFORE execution
   const expectedAnalyzerTurn = calculateTurnNumber(currentRoundNumber, 'Analyzer AI');
@@ -1363,7 +1390,7 @@ async function processSingleRound(
     discussionId,
     analyzerPersona,
     topic,
-    filteredContextForAnalyzer, // Use filtered context to exclude incomplete rounds
+    contextForAnalyzer, // All LLMs see all rounds
     isFirstMessage,
     files,
     currentRoundNumber,
@@ -2123,23 +2150,84 @@ async function checkAndGenerateAutoSummary(
 /**
  * Check if discussion is resolved and handle resolution
  */
-function checkAndHandleResolution(
+async function checkAndHandleResolution(
   io: Server,
   discussionId: string,
   discussionData: Awaited<ReturnType<typeof readDiscussion>>,
   round: DiscussionRound,
-  currentRoundNumber: number
-): boolean {
+  currentRoundNumber: number,
+  topic: string
+): Promise<boolean> {
+  // Only check resolution after minimum rounds requirement
+  const { DIALOGUE_CONFIG } = await import('@/lib/config');
+  const minRounds = DIALOGUE_CONFIG.RESOLUTION_MIN_ROUNDS;
+
+  if (currentRoundNumber < minRounds) {
+    logger.debug('Skipping resolution check - below minimum rounds', {
+      discussionId,
+      currentRoundNumber,
+      minRounds,
+    });
+    return false;
+  }
+
   const allRounds = [...(discussionData.rounds || []), round];
   const allMessages = allRounds.flatMap((r) => [r.analyzerResponse, r.solverResponse, r.moderatorResponse]);
 
-  if (allMessages.length >= 6) {
-    const resolved = isResolved(allMessages);
-    if (resolved) {
-      logger.info('Discussion resolved', { discussionId, roundNumber: currentRoundNumber });
-      updateDiscussion(discussionId, { is_resolved: 1 });
-      io.to(discussionId).emit('conversation-resolved', { discussionId: discussionId });
+  if (allMessages.length >= minRounds * 3) {
+    const resolutionResult = isResolved(allMessages, allRounds, topic);
+
+    // STRICT REQUIREMENT: Only resolve if reason is 'consensus' (true multi-round consensus)
+    if (resolutionResult.resolved && resolutionResult.reason === 'consensus') {
+      logger.info('Discussion resolved with consensus - generating finalized summary', {
+        discussionId,
+        roundNumber: currentRoundNumber,
+        confidence: resolutionResult.confidence,
+        reason: resolutionResult.reason,
+        hasSolution: !!resolutionResult.solution,
+      });
+
+      // Generate finalized summary (collaborative answer from all three LLMs)
+      let finalizedSummary: string | undefined;
+      try {
+        const { generateFinalizedSummary } = await import('@/lib/llm/resolver');
+        finalizedSummary = await generateFinalizedSummary(allRounds, topic, resolutionResult);
+        logger.info('Finalized summary generated', {
+          discussionId,
+          summaryLength: finalizedSummary.length,
+        });
+      } catch (error) {
+        logger.error('Error generating finalized summary', {
+          discussionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        // Continue with resolution even if summary generation fails
+      }
+
+      // Store finalized summary in database (use summary field or add new field)
+      const updateData: { is_resolved: number; summary?: string } = { is_resolved: 1 };
+      if (finalizedSummary) {
+        updateData.summary = finalizedSummary;
+      }
+      updateDiscussion(discussionId, updateData);
+
+      // Emit resolution event with finalized summary
+      io.to(discussionId).emit('conversation-resolved', {
+        discussionId: discussionId,
+        solution: resolutionResult.solution,
+        confidence: resolutionResult.confidence,
+        reason: resolutionResult.reason,
+        finalizedSummary,
+      });
       return true;
+    } else if (resolutionResult.resolved && resolutionResult.reason !== 'consensus') {
+      // Log that resolution was detected but not consensus - don't resolve
+      logger.debug('Resolution detected but not consensus - continuing discussion', {
+        discussionId,
+        roundNumber: currentRoundNumber,
+        reason: resolutionResult.reason,
+        confidence: resolutionResult.confidence,
+      });
     }
   }
   return false;
@@ -2164,18 +2252,26 @@ async function processDiscussionDialogueRounds(
   const discussionRecord = discussion || getDiscussion(discussionId, userId);
   if (!discussionRecord) {
     logger.error('Discussion not found in processDiscussionDialogueRounds', { discussionId });
-    io.to(discussionId).emit('error', {
-      discussionId: discussionId,
-      message: 'Discussion not found. Please start a new dialogue.',
-      code: ErrorCode.DISCUSSION_NOT_FOUND,
-    });
+    emitErrorToRoomWithDeduplication(
+      io,
+      discussionId,
+      {
+        code: ErrorCode.DISCUSSION_NOT_FOUND,
+        message: 'Discussion not found. Please start a new dialogue.',
+      },
+      'process-dialogue-rounds'
+    );
     return;
   }
 
   // Check if already resolved
   if (discussionRecord.is_resolved) {
     logger.info('Discussion already resolved, emitting resolved event', { discussionId });
-    io.to(discussionId).emit('conversation-resolved', { discussionId: discussionId });
+    io.to(discussionId).emit('conversation-resolved', {
+      discussionId: discussionId,
+      confidence: 1.0,
+      reason: 'already_resolved',
+    });
     return;
   }
 
@@ -2195,11 +2291,15 @@ async function processDiscussionDialogueRounds(
   } catch (error) {
     if (error instanceof Error && error.message.includes('already being processed')) {
       logger.warn('Discussion is already being processed', { discussionId, userId });
-      io.to(discussionId).emit('error', {
+      emitErrorToRoomWithDeduplication(
+        io,
         discussionId,
-        message: 'Discussion is already being processed. Please wait for the current operation to complete.',
-        code: ErrorCode.VALIDATION_ERROR,
-      });
+        {
+          code: ErrorCode.VALIDATION_ERROR,
+          message: 'Discussion is already being processed. Please wait for the current operation to complete.',
+        },
+        'process-dialogue-rounds'
+      );
       return;
     }
     throw error;
@@ -2306,26 +2406,99 @@ async function saveRoundAndEmitEvents(
   discussionId: string,
   userId: string,
   round: DiscussionRound,
-  currentRoundNumber: number
+  currentRoundNumber: number,
+  topic?: string,
+  discussionData?: Awaited<ReturnType<typeof readDiscussion>>
 ): Promise<void> {
-  // Save round to storage
+  // Check if questions are needed BEFORE saving the round (for round 3)
+  // This prevents duplicate saves and ensures questions are included in the round
+  if (currentRoundNumber === 3 && topic && discussionData) {
+    try {
+      const { shouldGenerateQuestionsAfterRound3 } = await import('@/lib/llm/resolver');
+      const allRounds = [...(discussionData.rounds || []), round];
+      const shouldGenerate = shouldGenerateQuestionsAfterRound3(allRounds, topic);
+
+      if (shouldGenerate) {
+        logger.info('Auto-generating questions after round 3 - LLMs need clarification', {
+          discussionId,
+          roundNumber: currentRoundNumber,
+        });
+
+        // Load discussion context for question generation
+        // loadDiscussionContext is already imported at the top of the file
+        const discussionContext = await loadDiscussionContext(discussionId, userId);
+        const previousRounds = discussionData.rounds || [];
+        const currentSummary = discussionContext.currentSummary;
+
+        // Generate questions automatically
+        const { generateQuestions } = await import('@/lib/llm/question-generator');
+
+        const questionSet = await generateQuestions(
+          discussionId,
+          userId,
+          topic,
+          round,
+          currentSummary,
+          previousRounds
+        );
+
+        // Store question set
+        await addQuestionSetToDiscussion(discussionId, userId, questionSet);
+
+        // Add questions to round object BEFORE saving
+        round.questions = questionSet;
+
+        logger.info('Questions generated and added to round', {
+          discussionId,
+          roundNumber: currentRoundNumber,
+          questionCount: questionSet.questions.length,
+        });
+      } else {
+        logger.debug('No questions needed after round 3 - LLMs are clear', {
+          discussionId,
+          roundNumber: currentRoundNumber,
+        });
+      }
+    } catch (error) {
+      logger.error('Error auto-generating questions after round 3', {
+        discussionId,
+        roundNumber: currentRoundNumber,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      // Don't fail the round completion if question generation fails
+      // Continue without questions
+    }
+  }
+
+  // Save round to storage (with questions if they were generated)
   logger.debug('Saving round to storage', { discussionId, roundNumber: currentRoundNumber });
   await syncFileAndDatabase(
     () => addRoundToDiscussion(discussionId, userId, round),
     () =>
       updateDiscussion(discussionId, {
-        current_turn: currentRoundNumber * 3, // Each round = 3 turns
+        current_turn: currentRoundNumber * 3, // Each round = 3 turns (analyzer, solver, moderator)
+        updated_at: Date.now(),
       }),
     { discussionId, userId, operation: 'addRound' }
   );
   logger.debug('Round saved to storage', { discussionId, roundNumber: currentRoundNumber });
 
-  // Emit round complete
+  // Emit round complete event (with questions if they were generated)
   logger.info('Emitting round-complete event', { discussionId, roundNumber: currentRoundNumber });
   io.to(discussionId).emit('round-complete', {
     discussionId: discussionId,
     round,
+    currentRoundNumber: currentRoundNumber,
   });
+
+  // Emit questions generated event if questions were added
+  if (round.questions) {
+    io.to(discussionId).emit('questions-generated', {
+      discussionId: discussionId,
+      questionSet: round.questions,
+      roundNumber: currentRoundNumber,
+    });
+  }
 
   logger.info('Round completed successfully', {
     discussionId,
@@ -2333,6 +2506,7 @@ async function saveRoundAndEmitEvents(
     solverLength: round.solverResponse.content.length,
     analyzerLength: round.analyzerResponse.content.length,
     moderatorLength: round.moderatorResponse.content.length,
+    hasQuestions: !!round.questions,
   });
 }
 
@@ -2392,12 +2566,16 @@ function handleRoundProcessingError(
     ? 'A temporary error occurred. You can try starting a new discussion.'
     : 'An error occurred while processing the discussion. The discussion has been marked as resolved. You can start a new discussion.';
 
-  io.to(discussionId).emit('error', {
+  emitErrorToRoomWithDeduplication(
+    io,
     discussionId,
-    message: userFriendlyMessage,
-    code: isRecoverableError ? ErrorCode.INTERNAL_ERROR : ErrorCode.INTERNAL_ERROR,
-    recoverable: isRecoverableError,
-  });
+    {
+      code: ErrorCode.INTERNAL_ERROR,
+      message: userFriendlyMessage,
+      recoverable: isRecoverableError,
+    },
+    'process-round'
+  );
 
   // Re-throw to be caught by outer handler
   throw error;
@@ -2435,7 +2613,18 @@ async function processDiscussionDialogueRoundsInternal(
 
     if (currentRoundNumber > maxRounds) {
       logger.info('Discussion reached max rounds', { discussionId, currentRoundNumber, maxRounds });
-      io.to(discussionId).emit('conversation-resolved', { discussionId: discussionId });
+      // Extract solution from last complete round if available
+      const allRounds = discussionData.rounds || [];
+      const allMessages = allRounds.flatMap((r) => [r.analyzerResponse, r.solverResponse, r.moderatorResponse]);
+      // Call isResolved to extract solution (it will return resolved: true due to max turns)
+      const resolutionResult = isResolved(allMessages, allRounds, topic);
+      io.to(discussionId).emit('conversation-resolved', {
+        discussionId: discussionId,
+        solution: resolutionResult.solution,
+        confidence: resolutionResult.confidence,
+        reason: resolutionResult.reason || 'max_turns',
+      });
+      updateDiscussion(discussionId, { is_resolved: 1 });
       return;
     }
 
@@ -2457,8 +2646,8 @@ async function processDiscussionDialogueRoundsInternal(
         userAnswers
       );
 
-      // Save round and emit events
-      await saveRoundAndEmitEvents(io, discussionId, userId, round, currentRoundNumber);
+      // Save round and emit events (with topic and discussionData for auto-question generation)
+      await saveRoundAndEmitEvents(io, discussionId, userId, round, currentRoundNumber, topic, discussionData);
 
       // Check and generate auto-summary if needed
       await checkAndGenerateAutoSummary(
@@ -2472,7 +2661,7 @@ async function processDiscussionDialogueRoundsInternal(
       );
 
       // Check for resolution
-      if (checkAndHandleResolution(io, discussionId, discussionData, round, currentRoundNumber)) {
+      if (await checkAndHandleResolution(io, discussionId, discussionData, round, currentRoundNumber, topic)) {
         return; // Discussion resolved, exit early
       }
     } catch (error) {
@@ -2509,12 +2698,16 @@ async function processDiscussionDialogueRoundsInternal(
       });
     }
 
-    io.to(discussionId).emit('error', {
+    emitErrorToRoomWithDeduplication(
+      io,
       discussionId,
-      message: 'An error occurred while processing the discussion. The discussion has been marked as resolved. You can start a new discussion.',
-      code: ErrorCode.INTERNAL_ERROR,
-      recoverable: false,
-    });
+      {
+        code: ErrorCode.INTERNAL_ERROR,
+        message: 'An error occurred while processing the discussion. The discussion has been marked as resolved. You can start a new discussion.',
+        recoverable: false,
+      },
+      'process-dialogue-rounds-internal'
+    );
 
     throw outerError;
   }
@@ -2969,7 +3162,7 @@ export async function generateAIResponse(
   });
 
   // PHASE 1: DIAGNOSTIC LOGGING - Context Token Usage
-  const { countTokens } = await import('@/lib/discussions/token-counter');
+  const { countTokens, estimateTokensFromChars } = await import('@/lib/discussions/token-counter');
   const { LLM_CONFIG: LLM_CONFIG_FOR_LOGGING } = await import('@/lib/config');
   const systemPromptTokens = countTokens(persona.systemPrompt);
   const userPromptTokens = countTokens(userPrompt);
@@ -3009,14 +3202,18 @@ export async function generateAIResponse(
     });
 
     // Emit error to client
-    io.to(discussionId).emit('error', {
-      discussionId: discussionId,
-      message:
-        providerError instanceof Error
-          ? providerError.message
-          : 'No LLM providers are available. Please check your API key configuration.',
-      code: ErrorCode.LLM_PROVIDER_ERROR,
-    });
+    emitErrorToRoomWithDeduplication(
+      io,
+      discussionId,
+      {
+        code: ErrorCode.LLM_PROVIDER_ERROR,
+        message:
+          providerError instanceof Error
+            ? providerError.message
+            : 'No LLM providers are available. Please check your API key configuration.',
+      },
+      'generate-ai-response'
+    );
 
     // Re-throw to be caught by outer error handler
     throw providerError;
@@ -3152,8 +3349,8 @@ export async function generateAIResponse(
     // PHASE 1: DIAGNOSTIC LOGGING - Response Metrics
     const responseTokens = countTokens(fullResponse);
     const finalResponseTokens = countTokens(finalResponse);
-    // Use 3.5 chars per token for consistency with completion logic
-    const estimatedResponseTokens = Math.ceil(fullResponse.trim().length / 3.5);
+    // Use standardized token estimation for consistency
+    const estimatedResponseTokens = estimateTokensFromChars(fullResponse.trim().length);
 
     logger.info('📊 RESPONSE METRICS: Streaming completed - comprehensive analysis', {
       discussionId,
@@ -3351,9 +3548,9 @@ export async function generateAIResponse(
         isComplete,
         responseLength: fullResponse.length,
         responseTokens: countTokens(fullResponse),
-        estimatedTokens: Math.ceil(fullResponse.trim().length / 3.5), // Use 3.5 chars per token for consistency
+        estimatedTokens: estimateTokensFromChars(fullResponse.trim().length), // Use standardized token estimation
         maxTokens: maxTokensForResponse,
-        tokenUtilization: maxTokensForResponse ? `${((Math.ceil(fullResponse.trim().length / 3.5) / maxTokensForResponse) * 100).toFixed(1)}%` : 'N/A',
+        tokenUtilization: maxTokensForResponse ? `${((estimateTokensFromChars(fullResponse.trim().length) / maxTokensForResponse) * 100).toFixed(1)}%` : 'N/A',
         chunkCount,
         continuationChunkCount,
         // Length analysis
@@ -3396,14 +3593,18 @@ export async function generateAIResponse(
       streamError instanceof Error && 'code' in streamError
         ? (streamError as ErrorWithCode).code
         : ErrorCode.LLM_PROVIDER_ERROR;
-    io.to(discussionId).emit('error', {
-      discussionId: discussionId,
-      message:
-        streamError instanceof Error
-          ? streamError.message
-          : 'An error occurred while generating the AI response. Please try again.',
-      code: errorCode,
-    });
+    emitErrorToRoomWithDeduplication(
+      io,
+      discussionId,
+      {
+        code: errorCode,
+        message:
+          streamError instanceof Error
+            ? streamError.message
+            : 'An error occurred while generating the AI response. Please try again.',
+      },
+      'llm-streaming'
+    );
 
     // Re-throw to be caught by outer error handler
     throw streamError;
@@ -3417,11 +3618,15 @@ export async function generateAIResponse(
       roundNumber,
     });
     const error = new Error('The AI provider returned an empty response. Please try again.');
-    io.to(discussionId).emit('error', {
-      discussionId: discussionId,
-      message: error.message,
-      code: ErrorCode.LLM_PROVIDER_ERROR,
-    });
+    emitErrorToRoomWithDeduplication(
+      io,
+      discussionId,
+      {
+        code: ErrorCode.LLM_PROVIDER_ERROR,
+        message: error.message,
+      },
+      'generate-ai-response'
+    );
     throw error;
   }
 
@@ -3430,8 +3635,8 @@ export async function generateAIResponse(
   const responseLength = trimmedResponse.length;
   const wordCount = trimmedResponse.split(/\s+/).filter(Boolean).length;
 
-  // Estimate tokens (rough approximation: ~4 characters per token)
-  const estimatedTokens = Math.ceil(responseLength / 4);
+  // Estimate tokens using standardized estimation (estimateTokensFromChars already imported above)
+  const estimatedTokens = estimateTokensFromChars(responseLength);
   // Use LLM_CONFIG default max tokens (can be overridden via MAX_TOKENS env var)
   const { LLM_CONFIG: LLM_CONFIG_FOR_VALIDATION } = await import('@/lib/config');
   const maxTokensForValidation = LLM_CONFIG_FOR_VALIDATION.DEFAULT_MAX_TOKENS;

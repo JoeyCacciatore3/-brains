@@ -16,7 +16,7 @@ import { ErrorCode, createErrorFromCode } from '@/lib/errors';
  */
 export function verifyDiscussionOwnership(discussionId: string, userId: string): boolean {
   try {
-    const discussion = getDiscussion(discussionId);
+    const discussion = getDiscussion(discussionId, userId);
     if (!discussion) {
       logger.warn('Discussion not found for ownership verification', {
         discussionId,

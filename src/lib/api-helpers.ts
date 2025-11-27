@@ -7,6 +7,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit, getRateLimitInfo } from '@/lib/rate-limit';
 import { ErrorCode, createErrorFromCode } from '@/lib/errors';
+import { getUserRateLimitTier } from '@/lib/rate-limit-tier';
+import type { RateLimitTier } from './config';
 
 /**
  * Extract client IP from request
@@ -33,13 +35,15 @@ export function getClientIP(request: NextRequest): string {
  */
 export function addRateLimitHeaders(
   response: NextResponse,
-  ip: string
+  ip: string,
+  tier: RateLimitTier = 'anonymous'
 ): NextResponse {
-  const rateLimitInfo = getRateLimitInfo(ip);
+  const rateLimitInfo = getRateLimitInfo(ip, tier);
 
   response.headers.set('X-RateLimit-Limit', rateLimitInfo.limit.toString());
   response.headers.set('X-RateLimit-Remaining', rateLimitInfo.remaining.toString());
   response.headers.set('X-RateLimit-Reset', Math.floor(rateLimitInfo.reset / 1000).toString());
+  response.headers.set('X-RateLimit-Tier', tier);
 
   return response;
 }
@@ -47,12 +51,18 @@ export function addRateLimitHeaders(
 /**
  * Check rate limit and return error response if exceeded
  * Also adds rate limit headers to response
+ * @param request - Next.js request object
+ * @param session - Optional session object to determine user tier
+ * @param userId - Optional user ID to determine user tier
  */
 export async function checkRateLimitWithHeaders(
-  request: NextRequest
-): Promise<{ exceeded: boolean; response?: NextResponse }> {
+  request: NextRequest,
+  session?: { user?: { email?: string | null; id?: string; premium?: boolean } } | null,
+  userId?: string
+): Promise<{ exceeded: boolean; response?: NextResponse; tier?: RateLimitTier }> {
   const ip = getClientIP(request);
-  const exceeded = await checkRateLimit(ip);
+  const tier = getUserRateLimitTier(userId, session);
+  const exceeded = await checkRateLimit(ip, tier);
 
   if (exceeded) {
     const error = createErrorFromCode(ErrorCode.RATE_LIMIT_EXCEEDED, { ip });
@@ -60,8 +70,8 @@ export async function checkRateLimitWithHeaders(
       { error: error.message, code: error.code },
       { status: 429 }
     );
-    return { exceeded: true, response: addRateLimitHeaders(response, ip) };
+    return { exceeded: true, response: addRateLimitHeaders(response, ip, tier), tier };
   }
 
-  return { exceeded: false };
+  return { exceeded: false, tier };
 }
