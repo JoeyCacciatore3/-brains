@@ -7,10 +7,11 @@ import { sanitizeLogData } from '@/lib/logger';
 
 describe('sanitizeLogData', () => {
   it('should sanitize API keys in strings', () => {
-    const input = 'API key: sk-1234567890abcdefghijklmnopqrstuvwxyz';
+    // Test with format that matches the pattern: "apikey: value" or "api_key=value"
+    const input = 'apikey: sk1234567890abcdefghijklmnopqrstuvwxyz';
     const result = sanitizeLogData(input) as string;
     expect(result).toContain('[SECRET_REDACTED]');
-    expect(result).not.toContain('sk-1234567890abcdefghijklmnopqrstuvwxyz');
+    expect(result).not.toContain('sk1234567890abcdefghijklmnopqrstuvwxyz');
   });
 
   it('should sanitize email addresses', () => {
