@@ -35,6 +35,7 @@ import {
 import { validatePersonaOrder } from '@/lib/discussions/round-validator';
 import { validateRoundNumberSequence, validateNewRoundNumber } from '@/lib/discussions/round-utils';
 import type { LLMProvider } from '@/lib/llm/types';
+import type { SocketData } from '@/types';
 import { summarizeRounds } from '@/lib/llm/summarizer';
 import { generateQuestions } from '@/lib/llm/question-generator';
 // Moderator summary generation removed - Moderator AI now participates in discussion
@@ -110,7 +111,7 @@ import type {
   SubmitAnswersEvent,
   ProceedDialogueEvent,
   GenerateQuestionsEvent,
-  ConversationMessage,
+  DiscussionMessage,
 } from '@/types';
 import type { LLMMessage } from '@/lib/llm/types';
 import type { FileData } from '@/lib/validation';
@@ -549,7 +550,8 @@ export function setupSocketHandlers(io: Server) {
           }
 
           // Leave previous discussion room if exists, then join new discussion room
-          const previousDiscussionId = socket.data?.previousDiscussionId;
+          const socketData = socket.data as SocketData;
+          const previousDiscussionId = socketData?.previousDiscussionId;
           if (previousDiscussionId && previousDiscussionId !== discussionId) {
             socket.leave(previousDiscussionId);
             logger.debug('Left previous discussion room', {
@@ -561,7 +563,7 @@ export function setupSocketHandlers(io: Server) {
           socket.join(discussionId);
           // Store current discussionId for future cleanup
           if (!socket.data) socket.data = {};
-          socket.data.previousDiscussionId = discussionId;
+          (socket.data as SocketData).previousDiscussionId = discussionId;
 
           // Emit discussion started
           socket.emit('discussion-started', {
@@ -1128,7 +1130,6 @@ async function loadDiscussionDataAndContext(
  * CRITICAL: This function MUST execute personas in the exact order: Analyzer → Solver → Moderator
  * Any deviation from this order is a critical bug and will be logged and throw an error.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function processSingleRound(
   io: Server,
   discussionId: string,
@@ -2222,7 +2223,7 @@ async function checkAndHandleResolution(
       updateDiscussion(discussionId, updateData);
 
       // Emit resolution event with finalized summary
-      io.to(discussionId).emit('conversation-resolved', {
+      io.to(discussionId).emit('discussion-resolved', {
         discussionId: discussionId,
         solution: resolutionResult.solution,
         confidence: resolutionResult.confidence,
@@ -2243,7 +2244,6 @@ async function checkAndHandleResolution(
   return false;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function processDiscussionDialogueRounds(
   io: Server,
   _socket: Socket,
@@ -2629,7 +2629,7 @@ async function processDiscussionDialogueRoundsInternal(
       const allMessages = allRounds.flatMap((r) => [r.analyzerResponse, r.solverResponse, r.moderatorResponse]);
       // Call isResolved to extract solution (it will return resolved: true due to max turns)
       const resolutionResult = isResolved(allMessages, allRounds, topic);
-      io.to(discussionId).emit('conversation-resolved', {
+      io.to(discussionId).emit('discussion-resolved', {
         discussionId: discussionId,
         solution: resolutionResult.solution,
         confidence: resolutionResult.confidence,
@@ -2738,7 +2738,7 @@ export async function generateAIResponse(
   files: FileData[] | undefined,
   roundNumber: number,
   userAnswers: Record<string, string[]>
-): Promise<ConversationMessage> {
+): Promise<DiscussionMessage> {
   // CRITICAL FIX 1.1: Pre-execution validation
   // Calculate expected turn BEFORE any processing
   const expectedTurn = calculateTurnNumber(roundNumber, persona.name as 'Analyzer AI' | 'Solver AI' | 'Moderator AI');
@@ -3606,7 +3606,7 @@ export async function generateAIResponse(
     throw streamError;
   }
 
-  // Validate response
+  // Validate response (after try-catch, but fullResponse should be available)
   if (!fullResponse || fullResponse.trim().length === 0) {
     logger.error('Empty response from LLM provider', {
       discussionId,
@@ -3648,7 +3648,23 @@ export async function generateAIResponse(
   const isBelowExpected = responseLength < expectedMinLength * 0.5;
 
   // Log response metrics
-  const logData: Record<string, any> = {
+  const logData: {
+    discussionId: string;
+    persona: string;
+    roundNumber: number;
+    turn: number;
+    exchangeNumber: number;
+    responseLength: number;
+    wordCount: number;
+    estimatedTokens: number;
+    maxTokens: number;
+    tokenUtilization: string;
+    responsePreview: string;
+    chunkCount: number;
+    continuationChunkCount: number;
+    endsWithPunctuation: boolean;
+    [key: string]: string | number | boolean | undefined;
+  } = {
     discussionId,
     persona: persona.name,
     roundNumber,
@@ -3738,7 +3754,7 @@ export async function generateAIResponse(
   // Turn number calculation: (roundNumber - 1) * 3 + position
   // Round 1: Analyzer = 1, Solver = 2, Moderator = 3
   // Round 2: Analyzer = 4, Solver = 5, Moderator = 6
-  const message: ConversationMessage = {
+  const message: DiscussionMessage = {
     discussion_id: discussionId,
     persona: persona.name as 'Solver AI' | 'Analyzer AI' | 'Moderator AI',
     content: finalContent, // CRITICAL FIX 1.2: Use finalResponse (via fullResponse) - only trim whitespace
@@ -3776,3 +3792,4 @@ export function setupSocketIO(io: Server) {
 
 // Also export as default for backward compatibility
 export default setupSocketIO;
+
