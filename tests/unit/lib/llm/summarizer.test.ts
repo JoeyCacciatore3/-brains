@@ -4,8 +4,8 @@ import {
   generateComprehensiveSummary,
   shouldSummarize,
 } from '@/lib/llm/summarizer';
-import { MockLLMProvider } from '@/tests/utils/mock-llm-provider';
-import { createMockDiscussionRound, createMultipleRounds } from '@/tests/utils/test-fixtures';
+import { MockLLMProvider } from '../../../../tests/utils/mock-llm-provider';
+import { createMockDiscussionRound, createMultipleRounds } from '../../../../tests/utils/test-fixtures';
 
 // Mock the LLM provider system
 vi.mock('@/lib/llm/index', () => {

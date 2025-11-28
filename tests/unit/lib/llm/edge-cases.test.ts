@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { isResolved, needsUserInput } from '@/lib/llm/resolver';
-import { createLongConversation, createMockConversationMessage } from '@/tests/utils/test-fixtures';
-import type { ConversationMessage } from '@/types';
+import { createLongConversation, createMockConversationMessage } from '../../../../tests/utils/test-fixtures';
+// ConversationMessage type is used in the test but not directly imported
 
 describe('LLM Edge Cases', () => {
   describe('Resolution Detection Edge Cases', () => {

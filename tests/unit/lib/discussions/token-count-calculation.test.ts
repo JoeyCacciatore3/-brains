@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { calculateDiscussionTokenCount } from '@/lib/discussions/token-counter';
-import { createMockDiscussionRound, createMockSummaryEntry } from '@/tests/utils/test-fixtures';
+import { createMockDiscussionRound, createMockSummaryEntry } from '../../../../tests/utils/test-fixtures';
 
 describe('calculateDiscussionTokenCount', () => {
   describe('without overhead (content only)', () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { MockLLMProvider } from '@/tests/utils/mock-llm-provider';
-import { createMockDiscussionRound } from '@/tests/utils/test-fixtures';
+import { MockLLMProvider } from '../../utils/mock-llm-provider';
+import { createMockDiscussionRound } from '../../utils/test-fixtures';
 import type { LLMMessage } from '@/lib/llm/types';
 
 // Mock all dependencies

@@ -124,7 +124,7 @@ test.describe('AI Dialogue Platform - Critical Path Tests', () => {
     await page.waitForTimeout(10000);
 
     // Check for round indicators
-    const roundCount = await page.locator('text=/Round \d+/i').count();
+    const roundCount = await page.locator('text=/Round [0-9]+/i').count();
     const hasRounds = roundCount > 0;
 
     expect(hasRounds).toBeTruthy();

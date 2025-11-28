@@ -25,7 +25,6 @@ import { getProviderWithFallback, aiPersonas, checkLLMProviderAvailability } fro
 import {
   filterCompleteRounds,
   calculateTurnNumber,
-  isRoundIncomplete,
 } from '@/lib/discussions/round-utils';
 import {
   EXECUTION_ORDER,
@@ -1129,6 +1128,7 @@ async function loadDiscussionDataAndContext(
  * CRITICAL: This function MUST execute personas in the exact order: Analyzer → Solver → Moderator
  * Any deviation from this order is a critical bug and will be logged and throw an error.
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function processSingleRound(
   io: Server,
   discussionId: string,
@@ -2243,6 +2243,7 @@ async function checkAndHandleResolution(
   return false;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function processDiscussionDialogueRounds(
   io: Server,
   _socket: Socket,
@@ -3776,4 +3777,3 @@ export function setupSocketIO(io: Server) {
 // Also export as default for backward compatibility
 export default setupSocketIO;
 }
-

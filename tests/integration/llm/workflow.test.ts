@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { MockLLMProvider } from '@/tests/utils/mock-llm-provider';
-import { createMockDiscussionRound, createMultipleRounds } from '@/tests/utils/test-fixtures';
+import { MockLLMProvider } from '../../utils/mock-llm-provider';
+import { createMockDiscussionRound, createMultipleRounds } from '../../utils/test-fixtures';
 import { isResolved, needsUserInput } from '@/lib/llm/resolver';
 import { generateQuestions } from '@/lib/llm/question-generator';
 import { generateComprehensiveSummary, shouldSummarize } from '@/lib/llm/summarizer';

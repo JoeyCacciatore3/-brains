@@ -5,7 +5,7 @@ import { initializeDatabase, closeDatabase } from '@/lib/db';
 import { calculateDiscussionTokenCount } from '@/lib/discussions/token-counter';
 import { loadDiscussionContext } from '@/lib/discussion-context';
 import { addRoundToDiscussion } from '@/lib/discussions/file-manager';
-import { createMockDiscussionRound } from '@/tests/utils/test-fixtures';
+import { createMockDiscussionRound } from '../../utils/test-fixtures';
 
 describe('Token Count Sync Integration', () => {
   const testUserId = 'test-user-token-sync';
@@ -29,7 +29,7 @@ describe('Token Count Sync Integration', () => {
   it('should sync token count from file to database consistently', async () => {
     // Create discussion
     const fileResult = await createDiscussionFiles(testUserId, 'Test topic for token sync');
-    const discussion = createDiscussion(
+    const _discussion = createDiscussion(
       testUserId,
       'Test topic for token sync',
       fileResult.jsonPath,

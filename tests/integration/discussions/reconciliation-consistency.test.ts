@@ -4,7 +4,7 @@ import { createDiscussion, getDiscussion } from '@/lib/db/discussions';
 import { initializeDatabase, closeDatabase } from '@/lib/db';
 import { reconcileDiscussion, validateTokenCountSync } from '@/lib/discussions/reconciliation';
 import { calculateDiscussionTokenCount } from '@/lib/discussions/token-counter';
-import { createMockDiscussionRound } from '@/tests/utils/test-fixtures';
+import { createMockDiscussionRound } from '../../utils/test-fixtures';
 import { addRoundToDiscussion } from '@/lib/discussions/file-manager';
 
 describe('Reconciliation Token Count Consistency', () => {

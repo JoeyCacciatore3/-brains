@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { MockLLMProvider } from '@/tests/utils/mock-llm-provider';
+import { MockLLMProvider } from '../../../../tests/utils/mock-llm-provider';
 import { getLLMProvider, getProviderWithFallback } from '@/lib/llm/index';
 import { generateQuestions } from '@/lib/llm/question-generator';
 import { generateSummary, generateComprehensiveSummary } from '@/lib/llm/summarizer';
-import { createMockDiscussionRound } from '@/tests/utils/test-fixtures';
+import { createMockDiscussionRound } from '../../../../tests/utils/test-fixtures';
 import type { LLMMessage } from '@/lib/llm/types';
 
 describe('LLM Error Handling', () => {

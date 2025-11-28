@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { generateQuestions } from '@/lib/llm/question-generator';
-import { MockLLMProvider } from '@/tests/utils/mock-llm-provider';
-import { createMockDiscussionRound } from '@/tests/utils/test-fixtures';
+import { MockLLMProvider } from '../../../../tests/utils/mock-llm-provider';
+import { createMockDiscussionRound } from '../../../../tests/utils/test-fixtures';
 import type { DiscussionRound } from '@/types';
 
 // Mock the LLM provider system

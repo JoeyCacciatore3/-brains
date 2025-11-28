@@ -195,7 +195,7 @@ export abstract class BaseProvider {
     const endsIncompleteQuote = /"[^"]*$/.test(trimmedContent) || /'[^']*$/.test(trimmedContent);
 
     // Check for incomplete list items
-    const endsIncompleteList = /^\s*[-•*]\s/m.test(trimmedContent) && /[, -]\s*$/.test(trimmedContent);
+    const endsIncompleteList = /^\s*[-•*]\s/m.test(trimmedContent) && /[,-]\s*$/.test(trimmedContent);
 
     // PHASE 3: COMPLETION LOGIC FIX - More accurate expected length calculation
     // System prompts request 2-4 paragraphs (300-500 words)

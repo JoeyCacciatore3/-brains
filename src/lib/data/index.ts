@@ -49,7 +49,7 @@ export async function createDiscussion(
   const actualId = discussionId || fileResult.id;
 
   // Create database metadata
-  const discussion = createDiscussionDB(
+  const _discussion = createDiscussionDB(
     userId,
     topic,
     fileResult.jsonPath,

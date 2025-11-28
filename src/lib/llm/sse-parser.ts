@@ -177,7 +177,7 @@ export class SSEParser {
           /:\s*$/, // Ends with colon (expecting value)
           /,\s*$/, // Ends with comma (expecting next item)
           /"\s*$/, // Ends with quote (might be incomplete string, but we already checked quotes)
-          /\d\s*$/, // Ends with digit (might be incomplete number)
+          /[0-9]\s*$/, // Ends with digit (might be incomplete number)
           /[a-zA-Z]\s*$/, // Ends with letter (might be incomplete keyword)
         ];
 
