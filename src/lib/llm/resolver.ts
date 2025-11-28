@@ -214,11 +214,11 @@ function extractSolutionText(round: DiscussionRound, topic?: string): string | u
 
   // Enhanced solution patterns - require explicit solution language
   const solutionPatterns = [
-    /\b(the solution is|the answer is|we recommend|we suggest|we propose|the recommendation is|our solution|our recommendation)\b[:\-]?\s*(.+?)(?:\.|$)/i,
-    /\b(therefore|in conclusion|to summarize|in summary|we conclude|we can conclude|the conclusion is)\b[:\-]?\s*(.+?)(?:\.|$)/i,
-    /\b(based on|considering|taking into account).+?we (recommend|suggest|propose|conclude)\b[:\-]?\s*(.+?)(?:\.|$)/i,
-    /\b(our|the) (recommended|suggested|proposed) (approach|solution|strategy|method|way forward)\b[:\-]?\s*(.+?)(?:\.|$)/i,
-    /\b(to solve|to address|to resolve|to tackle) (this|the problem|this issue),?\s*(we|i) (recommend|suggest|propose|conclude)\b[:\-]?\s*(.+?)(?:\.|$)/i,
+    /\b(the solution is|the answer is|we recommend|we suggest|we propose|the recommendation is|our solution|our recommendation)\b[: -]?\s*(.+?)(?:\.|$)/i,
+    /\b(therefore|in conclusion|to summarize|in summary|we conclude|we can conclude|the conclusion is)\b[: -]?\s*(.+?)(?:\.|$)/i,
+    /\b(based on|considering|taking into account).+?we (recommend|suggest|propose|conclude)\b[: -]?\s*(.+?)(?:\.|$)/i,
+    /\b(our|the) (recommended|suggested|proposed) (approach|solution|strategy|method|way forward)\b[: -]?\s*(.+?)(?:\.|$)/i,
+    /\b(to solve|to address|to resolve|to tackle) (this|the problem|this issue),?\s*(we|i) (recommend|suggest|propose|conclude)\b[: -]?\s*(.+?)(?:\.|$)/i,
   ];
 
   // Priority 1: Solver AI response (most likely to contain solution)
@@ -497,14 +497,14 @@ export function isResolved(
 
   // Check for multi-round consensus (stricter requirement)
   let hasMultiRoundConsensus = false;
-  let consensusRounds: number[] = [];
+  let _consensusRounds: number[] = [];
   let resolvedRound: DiscussionRound | undefined;
   if (rounds && rounds.length > 0) {
     const completeRounds = filterCompleteRounds(rounds);
     if (completeRounds.length >= DIALOGUE_CONFIG.RESOLUTION_CONSENSUS_ROUNDS) {
       const consensusResult = checkMultiRoundConsensus(completeRounds);
       hasMultiRoundConsensus = consensusResult.hasConsensus;
-      consensusRounds = consensusResult.consensusRounds;
+      const _consensusRounds = consensusResult.consensusRounds;
       if (hasMultiRoundConsensus && completeRounds.length > 0) {
         // Use the last round with consensus as the resolved round
         resolvedRound = completeRounds[completeRounds.length - 1];
@@ -796,7 +796,7 @@ export function shouldGenerateQuestionsAfterRound3(
 
   // Check if any round explicitly asks for user input
   for (const round of lastThreeRounds) {
-    const roundContent = [
+    const _roundContent = [
       round.analyzerResponse.content,
       round.solverResponse.content,
       round.moderatorResponse.content,

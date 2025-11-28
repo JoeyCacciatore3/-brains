@@ -27,8 +27,8 @@ function cleanupExpiredEntries(): void {
 }
 
 // Store interval IDs for cleanup on shutdown
-let cleanupExpiredEntriesIntervalId: NodeJS.Timeout | null = null;
-let cleanupExpiredOperationEntriesIntervalId: NodeJS.Timeout | null = null;
+let cleanupExpiredEntriesIntervalId: ReturnType<typeof setInterval> | null = null;
+let cleanupExpiredOperationEntriesIntervalId: ReturnType<typeof setInterval> | null = null;
 
 // Start periodic cleanup every 60 seconds
 if (typeof setInterval !== 'undefined') {

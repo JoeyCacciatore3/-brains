@@ -101,7 +101,7 @@ export function useSocket(): UseSocketReturn {
   interface ChunkTracking {
     chunkCount: number;
     lastChunkTime: number;
-    timeoutId: NodeJS.Timeout | null;
+    timeoutId: ReturnType<typeof setTimeout> | null;
     accumulatedLength: number;
   }
   const chunkTrackingRef = useRef<ChunkTracking | null>(null);

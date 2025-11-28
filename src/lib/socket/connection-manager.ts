@@ -360,13 +360,13 @@ export function getConnectionStats(): {
 }
 
 // Store interval ID for cleanup on shutdown
-let connectionCleanupIntervalId: NodeJS.Timeout | null = null;
+let connectionCleanupIntervalId: ReturnType<typeof setInterval> | null = null;
 
 /**
  * Periodic connection cleanup
  * @returns The interval ID for cleanup purposes
  */
-export function startPeriodicCleanup(io: Server): NodeJS.Timeout | null {
+export function startPeriodicCleanup(io: Server): ReturnType<typeof setInterval> | null {
   if (typeof setInterval !== 'undefined') {
     connectionCleanupIntervalId = setInterval(() => {
       cleanupIdleConnections(io);

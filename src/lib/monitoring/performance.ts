@@ -31,11 +31,6 @@ export async function trackPerformance<T>(
   }
 
   const startTime = Date.now();
-  const context: PerformanceContext = {
-    operation,
-    startTime,
-    metadata,
-  };
 
   try {
     const result = await fn();
@@ -85,11 +80,6 @@ export function trackPerformanceSync<T>(
   }
 
   const startTime = Date.now();
-  const context: PerformanceContext = {
-    operation,
-    startTime,
-    metadata,
-  };
 
   try {
     const result = fn();

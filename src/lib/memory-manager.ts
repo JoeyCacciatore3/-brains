@@ -10,7 +10,7 @@ import { clearResponseCache } from './cache/response-cache';
 const WARNING_THRESHOLD = 0.8; // 80% heap usage
 const CRITICAL_THRESHOLD = 0.9; // 90% heap usage
 
-let monitoringInterval: NodeJS.Timeout | null = null;
+let monitoringInterval: ReturnType<typeof setInterval> | null = null;
 
 /**
  * Get current memory usage statistics
