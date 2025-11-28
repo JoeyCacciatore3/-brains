@@ -6,7 +6,7 @@
 import { logger } from '@/lib/logger';
 import { readDiscussion, getUserDiscussionIds } from './file-manager';
 import { getDiscussion, updateDiscussion, getAllDiscussions } from '@/lib/db/discussions';
-import { countTokens } from './token-counter';
+import { calculateDiscussionTokenCount, countTokens } from './token-counter';
 
 interface ReconciliationResult {
   discussionId: string;
@@ -44,32 +44,12 @@ export async function reconcileDiscussion(
       return result;
     }
 
-    // Calculate token count from file
-    let tokenCount = 0;
-    if (fileData.currentSummary) {
-      tokenCount += countTokens(fileData.currentSummary.summary);
-      if (fileData.rounds) {
-        const summaryRound = fileData.currentSummary.roundNumber;
-        const roundsAfterSummary = fileData.rounds.filter((r) => r.roundNumber > summaryRound);
-        tokenCount += roundsAfterSummary.reduce((sum, round) => {
-          return (
-            sum +
-            countTokens(round.solverResponse.content) +
-            countTokens(round.analyzerResponse.content) +
-            countTokens(round.moderatorResponse.content)
-          );
-        }, 0);
-      }
-    } else if (fileData.rounds && fileData.rounds.length > 0) {
-      tokenCount = fileData.rounds.reduce((sum, round) => {
-        return (
-          sum +
-          countTokens(round.solverResponse.content) +
-          countTokens(round.analyzerResponse.content) +
-          countTokens(round.moderatorResponse.content)
-        );
-      }, 0);
-    }
+    // Calculate token count from file using centralized function
+    // Option A: Database stores full context token count including overhead (matches loadDiscussionContext)
+    const tokenCount = calculateDiscussionTokenCount(fileData, {
+      includeSystemPrompts: true,
+      includeFormattingOverhead: true,
+    });
 
     // Check for inconsistencies
     const updates: Partial<{
@@ -262,32 +242,12 @@ export async function validateTokenCountSync(
       throw new Error('Discussion not found in database');
     }
 
-    // Calculate token count from file (same logic as reconcileDiscussion)
-    let fileTokenCount = 0;
-    if (fileData.currentSummary) {
-      fileTokenCount += countTokens(fileData.currentSummary.summary);
-      if (fileData.rounds) {
-        const summaryRound = fileData.currentSummary.roundNumber;
-        const roundsAfterSummary = fileData.rounds.filter((r) => r.roundNumber > summaryRound);
-        fileTokenCount += roundsAfterSummary.reduce((sum, round) => {
-          return (
-            sum +
-            countTokens(round.solverResponse.content) +
-            countTokens(round.analyzerResponse.content) +
-            countTokens(round.moderatorResponse.content)
-          );
-        }, 0);
-      }
-    } else if (fileData.rounds && fileData.rounds.length > 0) {
-      fileTokenCount = fileData.rounds.reduce((sum, round) => {
-        return (
-          sum +
-          countTokens(round.solverResponse.content) +
-          countTokens(round.analyzerResponse.content) +
-          countTokens(round.moderatorResponse.content)
-        );
-      }, 0);
-    }
+    // Calculate token count from file using centralized function
+    // Option A: Database stores full context token count including overhead (matches loadDiscussionContext)
+    const fileTokenCount = calculateDiscussionTokenCount(fileData, {
+      includeSystemPrompts: true,
+      includeFormattingOverhead: true,
+    });
 
     const dbTokenCount = dbRecord.token_count;
     const difference = Math.abs(fileTokenCount - dbTokenCount);

@@ -32,7 +32,7 @@ import {
   addSummaryToDiscussion,
   updateDiscussionWithSummary,
 } from '@/lib/discussions/file-manager';
-import { countTokens } from '@/lib/discussions/token-counter';
+import { calculateDiscussionTokenCount } from '@/lib/discussions/token-counter';
 import { logger } from '@/lib/logger';
 
 /**
@@ -115,26 +115,13 @@ export async function addRound(
   // Add round to file storage (source of truth for content)
   await addRoundToDiscussion(discussionId, userId, round);
 
-  // Sync token count from file to database
+  // Sync token count from file to database using centralized function
+  // Option A: Database stores full context token count including overhead (matches loadDiscussionContext)
   const discussionData = await readDiscussion(discussionId, userId);
-  // Calculate token count from all rounds and summaries
-  let totalTokens = 0;
-
-  // Count tokens from all rounds
-  if (discussionData.rounds) {
-    for (const r of discussionData.rounds) {
-      totalTokens += countTokens(r.solverResponse.content);
-      totalTokens += countTokens(r.analyzerResponse.content);
-      totalTokens += countTokens(r.moderatorResponse.content);
-    }
-  }
-
-  // Count tokens from summaries (if not replaced by current summary)
-  if (discussionData.summaries) {
-    for (const summary of discussionData.summaries) {
-      totalTokens += countTokens(summary.summary);
-    }
-  }
+  const totalTokens = calculateDiscussionTokenCount(discussionData, {
+    includeSystemPrompts: true,
+    includeFormattingOverhead: true,
+  });
 
   syncTokenCountFromFile(discussionId, totalTokens);
 }
@@ -205,24 +192,12 @@ export function getUserDiscussions(userId: string): Discussion[] {
  */
 export async function syncTokenCount(discussionId: string, userId: string): Promise<void> {
   const discussionData = await readDiscussion(discussionId, userId);
-  // Calculate token count from all rounds and summaries
-  let totalTokens = 0;
-
-  // Count tokens from all rounds
-  if (discussionData.rounds) {
-    for (const r of discussionData.rounds) {
-      totalTokens += countTokens(r.solverResponse.content);
-      totalTokens += countTokens(r.analyzerResponse.content);
-      totalTokens += countTokens(r.moderatorResponse.content);
-    }
-  }
-
-  // Count tokens from summaries
-  if (discussionData.summaries) {
-    for (const summary of discussionData.summaries) {
-      totalTokens += countTokens(summary.summary);
-    }
-  }
+  // Calculate token count using centralized function
+  // Option A: Database stores full context token count including overhead (matches loadDiscussionContext)
+  const totalTokens = calculateDiscussionTokenCount(discussionData, {
+    includeSystemPrompts: true,
+    includeFormattingOverhead: true,
+  });
 
   syncTokenCountFromFile(discussionId, totalTokens);
 }

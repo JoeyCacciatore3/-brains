@@ -160,6 +160,7 @@ export function InputSection({
     }
   };
 
+  // @ts-ignore - intentionally unused
   const _removeFile = (index: number) => {
     setFiles((prev) => prev.filter((_, i) => i !== index));
   };

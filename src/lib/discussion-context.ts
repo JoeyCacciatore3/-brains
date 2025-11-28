@@ -1,9 +1,8 @@
 import type { ConversationMessage, DiscussionRound, SummaryEntry } from '@/types';
 import type { FileData } from '@/lib/validation';
 import { readDiscussion } from '@/lib/discussions/file-manager';
-import { countTokens } from '@/lib/discussions/token-counter';
+import { calculateDiscussionTokenCount } from '@/lib/discussions/token-counter';
 import { logger } from '@/lib/logger';
-import { aiPersonas } from '@/lib/llm';
 import { validateTokenCountSync } from '@/lib/discussions/reconciliation';
 import {
   filterCompleteRounds,
@@ -53,87 +52,12 @@ export async function loadDiscussionContext(
     });
   }
 
-  // Calculate token count for context
-  let tokenCount = 0;
-
-  // Account for system prompt tokens (average across personas, ~250 tokens each)
-  // We count system prompt once per round exchange (all three personas use system prompts)
-  const systemPromptTokens = Math.max(
-    countTokens(aiPersonas.solver.systemPrompt),
-    countTokens(aiPersonas.analyzer.systemPrompt),
-    countTokens(aiPersonas.moderator.systemPrompt)
-  );
-
-  // Account for formatting overhead (markdown, separators, prompt structure)
-  // Estimated overhead per prompt: ~50-100 tokens for structure
-  const formattingOverhead = 75;
-
-  // If summary exists, use it (replaces old rounds)
-  if (discussionData.currentSummary) {
-    // Use tokenCountAfter from summary metadata instead of recalculating
-    // This ensures accuracy and reflects the actual state after summarization
-    tokenCount = discussionData.currentSummary.tokenCountAfter;
-
-    // Add tokens for rounds after summary
-    if (discussionData.rounds) {
-      const summaryRound = discussionData.currentSummary.roundNumber;
-      const roundsAfterSummary = discussionData.rounds.filter((r) => r.roundNumber > summaryRound);
-      tokenCount += roundsAfterSummary.reduce((sum, round) => {
-        return (
-          sum +
-          countTokens(round.solverResponse.content) +
-          countTokens(round.analyzerResponse.content) +
-          countTokens(round.moderatorResponse.content)
-        );
-      }, 0);
-    }
-
-    // Add system prompt and formatting overhead for remaining rounds
-    // Each round has 3 responses, so multiply by 3
-    const roundsAfterSummaryCount = discussionData.rounds
-      ? discussionData.rounds.filter((r) => r.roundNumber > discussionData.currentSummary!.roundNumber)
-          .length
-      : 0;
-    tokenCount += roundsAfterSummaryCount * 3 * (systemPromptTokens + formattingOverhead);
-
-    // Validate token count consistency
-    const recalculatedSummaryTokens = countTokens(discussionData.currentSummary.summary);
-    if (Math.abs(discussionData.currentSummary.tokenCountAfter - recalculatedSummaryTokens) > 10) {
-      logger.warn('Token count mismatch in summary metadata', {
-        discussionId,
-        userId,
-        metadataTokenCount: discussionData.currentSummary.tokenCountAfter,
-        recalculatedTokenCount: recalculatedSummaryTokens,
-        difference: Math.abs(
-          discussionData.currentSummary.tokenCountAfter - recalculatedSummaryTokens
-        ),
-      });
-    }
-  } else if (discussionData.rounds && discussionData.rounds.length > 0) {
-    // No summary, count all rounds
-    tokenCount = discussionData.rounds.reduce((sum, round) => {
-      return (
-        sum +
-        countTokens(round.solverResponse.content) +
-        countTokens(round.analyzerResponse.content) +
-        countTokens(round.moderatorResponse.content)
-      );
-    }, 0);
-
-    // Add system prompt and formatting overhead for all rounds
-    // Each round has 3 responses, so multiply by 3
-    tokenCount += discussionData.rounds.length * 3 * (systemPromptTokens + formattingOverhead);
-  } else {
-    // Fallback to legacy messages
-    tokenCount = (discussionData.messages || []).reduce(
-      (sum, msg) => sum + countTokens(msg.content),
-      0
-    );
-
-    // Add system prompt and formatting overhead for legacy messages
-    const messageCount = discussionData.messages?.length || 0;
-    tokenCount += Math.ceil(messageCount / 2) * (systemPromptTokens + formattingOverhead);
-  }
+  // Calculate token count for context using centralized function
+  // This includes system prompts and formatting overhead (Option A: full context size)
+  const tokenCount = calculateDiscussionTokenCount(discussionData, {
+    includeSystemPrompts: true,
+    includeFormattingOverhead: true,
+  });
 
   // Generate messages array on-demand from rounds for LLM prompt formatting
   // Rounds are the primary source of truth. Messages array is derived, not stored.

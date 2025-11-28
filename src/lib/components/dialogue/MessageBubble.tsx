@@ -34,6 +34,7 @@ export function MessageBubble({
   }
 
   // Type guard for DOMPurify instance
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   function _isDOMPurifyInstance(obj: unknown): obj is DOMPurifyInstance {
     return (
       typeof obj === 'object' &&

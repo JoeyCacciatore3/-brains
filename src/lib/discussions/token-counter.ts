@@ -5,6 +5,7 @@
  */
 
 import { logger } from '@/lib/logger';
+import { aiPersonas } from '@/lib/llm';
 
 /**
  * Interface for tokenizer objects from tiktoken
@@ -392,4 +393,175 @@ export function getTokenPercentage(currentCount: number, limit?: number): number
   const tokenLimit = limit || getTokenLimit();
   if (tokenLimit === 0) return 0;
   return Math.min(100, Math.round((currentCount / tokenLimit) * 100));
+}
+
+/**
+ * Options for calculating discussion token count
+ */
+export interface DiscussionTokenCountOptions {
+  /**
+   * Whether to include system prompt tokens in the count
+   * System prompts are ~250 tokens each and used for each persona response
+   * @default true (recommended for context window management)
+   */
+  includeSystemPrompts?: boolean;
+
+  /**
+   * Whether to include formatting overhead (markdown, separators, prompt structure)
+   * Estimated overhead: ~75 tokens per round
+   * @default true (recommended for context window management)
+   */
+  includeFormattingOverhead?: boolean;
+}
+
+/**
+ * Calculate token count for a discussion from DiscussionData
+ * This is the centralized function for all token counting operations.
+ *
+ * According to the plan (Option A), database should store full context token count
+ * including system prompts and formatting overhead, matching what loadDiscussionContext() returns.
+ *
+ * @param discussionData - The discussion data from readDiscussion()
+ * @param options - Options for including system prompts and formatting overhead
+ * @returns Total token count for the discussion
+ */
+export function calculateDiscussionTokenCount(
+  discussionData: {
+    rounds?: Array<{
+      roundNumber: number;
+      analyzerResponse: { content: string };
+      solverResponse: { content: string };
+      moderatorResponse: { content: string };
+    }>;
+    currentSummary?: {
+      summary: string;
+      roundNumber: number;
+      tokenCountAfter?: number; // Summary content tokens only
+    };
+    summaries?: Array<{ summary: string }>;
+    messages?: Array<{ content: string }>;
+  },
+  options: DiscussionTokenCountOptions = {}
+): number {
+  const {
+    includeSystemPrompts = true,
+    includeFormattingOverhead = true,
+  } = options;
+
+  let tokenCount = 0;
+
+  // Calculate system prompt tokens if needed
+  let systemPromptTokens = 0;
+  let formattingOverheadPerRound = 0;
+
+  if (includeSystemPrompts || includeFormattingOverhead) {
+    // System prompts are ~250 tokens each, we use the max of all three
+    systemPromptTokens = Math.max(
+      countTokens(aiPersonas.solver.systemPrompt),
+      countTokens(aiPersonas.analyzer.systemPrompt),
+      countTokens(aiPersonas.moderator.systemPrompt)
+    );
+
+    if (includeFormattingOverhead) {
+      // Formatting overhead: markdown, separators, prompt structure
+      // Estimated ~75 tokens per round
+      formattingOverheadPerRound = 75;
+    }
+  }
+
+  // If summary exists, use it (replaces old rounds)
+  if (discussionData.currentSummary) {
+    // Use tokenCountAfter from summary metadata if available (summary content tokens only)
+    // Otherwise calculate from summary text
+    const summaryTokens = discussionData.currentSummary.tokenCountAfter
+      ? discussionData.currentSummary.tokenCountAfter
+      : countTokens(discussionData.currentSummary.summary);
+
+    tokenCount += summaryTokens;
+
+    // Add system prompt and formatting overhead for summary if included
+    if (includeSystemPrompts || includeFormattingOverhead) {
+      // Summarizer uses a system prompt (smaller, but count it if including system prompts)
+      if (includeSystemPrompts) {
+        const summarizerPromptTokens = countTokens(aiPersonas.summarizer.systemPrompt);
+        tokenCount += summarizerPromptTokens;
+      }
+      if (includeFormattingOverhead) {
+        // Summary formatting overhead
+        tokenCount += 50; // Less overhead for summary
+      }
+    }
+
+    // Add tokens for rounds after summary
+    if (discussionData.rounds) {
+      const summaryRound = discussionData.currentSummary.roundNumber;
+      const roundsAfterSummary = discussionData.rounds.filter((r) => r.roundNumber > summaryRound);
+      const roundsAfterSummaryCount = roundsAfterSummary.length;
+
+      // Count content tokens from rounds after summary
+      tokenCount += roundsAfterSummary.reduce((sum, round) => {
+        return (
+          sum +
+          countTokens(round.solverResponse.content) +
+          countTokens(round.analyzerResponse.content) +
+          countTokens(round.moderatorResponse.content)
+        );
+      }, 0);
+
+      // Add system prompt and formatting overhead for rounds after summary
+      // Each round has 3 responses (Analyzer, Solver, Moderator)
+      if (includeSystemPrompts || includeFormattingOverhead) {
+        const overheadPerRound = includeSystemPrompts
+          ? systemPromptTokens * 3 // 3 system prompts per round
+          : 0;
+        const formattingPerRound = includeFormattingOverhead
+          ? formattingOverheadPerRound * 3 // 3 responses per round
+          : 0;
+        tokenCount += roundsAfterSummaryCount * (overheadPerRound + formattingPerRound);
+      }
+    }
+  } else if (discussionData.rounds && discussionData.rounds.length > 0) {
+    // No summary, count all rounds
+    const roundsCount = discussionData.rounds.length;
+
+    // Count content tokens from all rounds
+    tokenCount = discussionData.rounds.reduce((sum, round) => {
+      return (
+        sum +
+        countTokens(round.solverResponse.content) +
+        countTokens(round.analyzerResponse.content) +
+        countTokens(round.moderatorResponse.content)
+      );
+    }, 0);
+
+    // Add system prompt and formatting overhead for all rounds
+    // Each round has 3 responses (Analyzer, Solver, Moderator)
+    if (includeSystemPrompts || includeFormattingOverhead) {
+      const overheadPerRound = includeSystemPrompts
+        ? systemPromptTokens * 3 // 3 system prompts per round
+        : 0;
+      const formattingPerRound = includeFormattingOverhead
+        ? formattingOverheadPerRound * 3 // 3 responses per round
+        : 0;
+      tokenCount += roundsCount * (overheadPerRound + formattingPerRound);
+    }
+  } else if (discussionData.messages && discussionData.messages.length > 0) {
+    // Fallback to legacy messages
+    tokenCount = discussionData.messages.reduce(
+      (sum, msg) => sum + countTokens(msg.content),
+      0
+    );
+
+    // Add system prompt and formatting overhead for legacy messages
+    const messageCount = discussionData.messages.length;
+    if (includeSystemPrompts || includeFormattingOverhead) {
+      // Legacy messages: estimate 2 messages per round exchange
+      const estimatedRounds = Math.ceil(messageCount / 2);
+      const overheadPerRound = includeSystemPrompts ? systemPromptTokens : 0;
+      const formattingPerRound = includeFormattingOverhead ? formattingOverheadPerRound : 0;
+      tokenCount += estimatedRounds * (overheadPerRound + formattingPerRound);
+    }
+  }
+
+  return tokenCount;
 }
