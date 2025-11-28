@@ -33,13 +33,20 @@ export function sanitizeLogData(data: unknown): unknown {
   // Handle strings
   if (typeof data === 'string') {
     let sanitized = data;
-    for (const pattern of SENSITIVE_PATTERNS) {
-      sanitized = sanitized.replace(pattern, () => {
-        // Replace with redacted marker
-        if (pattern.source.includes('email')) {
+    for (let i = 0; i < SENSITIVE_PATTERNS.length; i++) {
+      const pattern = SENSITIVE_PATTERNS[i];
+      sanitized = sanitized.replace(pattern, (match) => {
+        // Replace with redacted marker based on pattern type
+        // Pattern index 2 is email addresses
+        if (i === 2) {
           return '[EMAIL_REDACTED]';
         }
-        if (pattern.source.includes('api') || pattern.source.includes('secret') || pattern.source.includes('token')) {
+        // Patterns 0 and 1 are API keys, secrets, tokens
+        if (i === 0 || i === 1) {
+          return '[SECRET_REDACTED]';
+        }
+        // Pattern 3 is JWT tokens
+        if (i === 3) {
           return '[SECRET_REDACTED]';
         }
         return '[REDACTED]';
@@ -82,7 +89,12 @@ export function sanitizeLogData(data: unknown): unknown {
       const lowerKey = key.toLowerCase();
       // Skip sensitive keys entirely or sanitize their values
       if (sensitiveKeys.some((sk) => lowerKey.includes(sk.toLowerCase()))) {
-        sanitized[key] = '[REDACTED]';
+        // Use specific redaction markers for different types
+        if (lowerKey.includes('email')) {
+          sanitized[key] = '[EMAIL_REDACTED]';
+        } else {
+          sanitized[key] = '[REDACTED]';
+        }
       } else if (lowerKey === 'files' && Array.isArray(value)) {
         // For file arrays, only log metadata, not content
         sanitized[key] = value.map((file: unknown) => {

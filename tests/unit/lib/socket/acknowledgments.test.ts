@@ -18,7 +18,7 @@ describe('Socket.IO Acknowledgments', () => {
     const emitWithAck = <T = unknown>(
       event: string,
       data: unknown,
-      timeoutMs: number = 5000
+      timeoutMs: number = 100
     ): Promise<T> => {
       return new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
@@ -37,9 +37,9 @@ describe('Socket.IO Acknowledgments', () => {
       });
     };
 
-    // Test that timeout is handled
-    await expect(emitWithAck('test-event', {})).rejects.toThrow('Acknowledgment timeout');
-  });
+    // Test that timeout is handled (with shorter timeout for faster test)
+    await expect(emitWithAck('test-event', {}, 100)).rejects.toThrow('Acknowledgment timeout');
+  }, 1000);
 
   it('should handle successful acknowledgment', async () => {
     const mockSocket = {
