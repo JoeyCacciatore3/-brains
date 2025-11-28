@@ -3792,4 +3792,4 @@ export function setupSocketIO(io: Server) {
 
 // Also export as default for backward compatibility
 export default setupSocketIO;
-
+}
