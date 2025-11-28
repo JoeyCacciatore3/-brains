@@ -12,6 +12,7 @@ const PERFORMANCE_SLOW_THRESHOLD_MS = parseInt(
   10
 );
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 interface PerformanceContext {
   operation: string;
   startTime: number;

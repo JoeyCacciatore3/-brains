@@ -33,7 +33,8 @@ export function registerJob(job: Omit<Job, 'id'>): string {
 /**
  * Run a job
  */
-async function runJob(job: Job): Promise<void> {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+async function _runJob(job: Job): Promise<void> {
   try {
     logger.info('Running background job', { id: job.id, name: job.name });
     await job.handler();

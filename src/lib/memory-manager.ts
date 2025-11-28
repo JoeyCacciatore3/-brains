@@ -3,7 +3,8 @@
  * Monitors memory usage and triggers cleanup when thresholds are exceeded
  */
 
-import { logger } from './logger';
+// logger not currently used but kept for future logging
+// import { logger } from './logger';
 import { clearPromptCache } from './cache/prompt-cache';
 import { clearResponseCache } from './cache/response-cache';
 

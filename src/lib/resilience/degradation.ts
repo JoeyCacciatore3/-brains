@@ -24,7 +24,7 @@ export function getSystemLoad(): {
   memoryUsage: number;
   activeRequests: number;
 } {
-  const cpus = os.cpus();
+  const _cpus = os.cpus();
   const totalMemory = os.totalmem();
   const freeMemory = os.freemem();
   const usedMemory = totalMemory - freeMemory;

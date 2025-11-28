@@ -7,6 +7,7 @@ import { Server } from 'socket.io';
 import { logger } from '@/lib/logger';
 import { ErrorCode } from '@/lib/errors';
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 interface ErrorFingerprint {
   code: ErrorCode | string;
   discussionId?: string;

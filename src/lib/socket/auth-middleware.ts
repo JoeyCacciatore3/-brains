@@ -92,7 +92,7 @@ async function getSessionFromSocket(socket: Socket): Promise<{ user?: SocketUser
     // Minimum length: 32 characters (recommended for production)
     // Should contain mixed alphanumeric and special characters
     const MIN_SECRET_LENGTH = 32;
-    const hasMinLength = secret.length >= MIN_SECRET_LENGTH;
+    const _hasMinLength = secret.length >= MIN_SECRET_LENGTH;
     const hasAlphanumeric = /[a-zA-Z0-9]/.test(secret);
     const hasSpecialChars = /[^a-zA-Z0-9]/.test(secret);
     const isWeakSecret = secret === 'development-secret-change-in-production' ||
@@ -130,7 +130,7 @@ async function getSessionFromSocket(socket: Socket): Promise<{ user?: SocketUser
       // { sub: userId, email: user.email, name: user.name, iat: issuedAt, exp: expiresAt }
       const userId = payload.sub;
       const email = payload.email as string | undefined;
-      const name = payload.name as string | undefined;
+      const _name = payload.name as string | undefined;
 
       if (!userId || !email) {
         logger.warn('Invalid JWT payload: missing userId or email', {

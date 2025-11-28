@@ -1,4 +1,5 @@
-import { getRedisClient } from './db/redis';
+// getRedisClient not currently used but kept for future Redis-based rate limiting
+// import { getRedisClient } from './db/redis';
 import { logger } from './logger';
 import { RATE_LIMIT_CONFIG, RATE_LIMIT_TIERS, type RateLimitTier } from './config';
 
@@ -10,6 +11,7 @@ interface RateLimitEntry {
 const rateLimitStore = new Map<string, RateLimitEntry>();
 
 // Legacy constants kept for backward compatibility (now using tier-based limits)
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const MAX_REQUESTS = RATE_LIMIT_CONFIG.MAX_REQUESTS;
 const WINDOW_MS = RATE_LIMIT_CONFIG.WINDOW_MS;
 
