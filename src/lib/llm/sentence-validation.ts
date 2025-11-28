@@ -104,7 +104,7 @@ export function isSentenceComplete(content: string): boolean {
   }
 
   // Check for incomplete list items (ends with comma, dash, or number with period)
-  if (/^\s*[-•*]\s/.test(trimmed) && /[,\-]\s*$/.test(trimmed)) {
+  if (/^\s*[-•*]\s/.test(trimmed) && /[,-]\s*$/.test(trimmed)) {
     return false; // Incomplete list item
   }
 

@@ -111,6 +111,7 @@ import type {
   SubmitAnswersEvent,
   ProceedDialogueEvent,
   GenerateQuestionsEvent,
+  ConversationMessage,
 } from '@/types';
 import type { LLMMessage } from '@/lib/llm/types';
 import type { FileData } from '@/lib/validation';
@@ -2736,7 +2737,7 @@ export async function generateAIResponse(
   files: FileData[] | undefined,
   roundNumber: number,
   userAnswers: Record<string, string[]>
-): Promise<import('@/types').ConversationMessage> {
+): Promise<ConversationMessage> {
   // CRITICAL FIX 1.1: Pre-execution validation
   // Calculate expected turn BEFORE any processing
   const expectedTurn = calculateTurnNumber(roundNumber, persona.name as 'Analyzer AI' | 'Solver AI' | 'Moderator AI');
@@ -3265,7 +3266,7 @@ export async function generateAIResponse(
     turn,
   });
 
-    // CRITICAL FIX 1.2: Stream response with proper chunk accumulation
+  // CRITICAL FIX 1.2: Stream response with proper chunk accumulation
     //
     // Variable Usage Pattern:
     // - fullResponse: Accumulates chunks during streaming for real-time UI display
@@ -3281,12 +3282,12 @@ export async function generateAIResponse(
     // NOTE: With BaseProvider refactoring, completion logic now ensures continuation chunks
     // are always emitted via onChunk callback. This code handles edge cases where chunks
     // might still be missing.
-    let fullResponse = '';
-    let finalResponse = '';
-    let chunkCount = 0;
-    let continuationChunkCount = 0;
-    let initialStreamingComplete = false;
-    let lastChunkTime = Date.now();
+  let fullResponse = '';
+  let finalResponse = '';
+  let chunkCount = 0;
+  let continuationChunkCount = 0;
+  let initialStreamingComplete = false;
+  let lastChunkTime = Date.now();
   try {
     // provider.stream() returns the final response (which may have been completed via completeThought)
     // The onChunk callback will be called for both initial chunks and continuation chunks
@@ -3521,53 +3522,53 @@ export async function generateAIResponse(
       });
     }
 
-      // ENHANCED: Final response validation - ensure response is complete before returning
-      const { validateSentenceCompleteness } = await import('@/lib/llm/sentence-validation');
-      const isComplete = validateSentenceCompleteness(
-        fullResponse,
-        'stop',
-        persona.name,
-        maxTokensForResponse
-      );
+    // ENHANCED: Final response validation - ensure response is complete before returning
+    const { validateSentenceCompleteness } = await import('@/lib/llm/sentence-validation');
+    const isComplete = validateSentenceCompleteness(
+      fullResponse,
+      'stop',
+      persona.name,
+      maxTokensForResponse
+    );
 
-      // PHASE 1: DIAGNOSTIC LOGGING - Completion and Truncation Metrics
-      const hadCompletion = continuationChunkCount > 0 || (finalResponse.length > fullResponse.length);
-      const truncationMetrics = {
-        discussionId,
-        persona: persona.name,
-        provider: persona.provider,
-        roundNumber,
-        hadCompletion,
-        completionAttempts: hadCompletion ? 1 : 0, // Will be updated by provider logs
-        isComplete,
-        responseLength: fullResponse.length,
-        responseTokens: countTokens(fullResponse),
-        estimatedTokens: estimateTokensFromChars(fullResponse.trim().length), // Use standardized token estimation
-        maxTokens: maxTokensForResponse,
-        tokenUtilization: maxTokensForResponse ? `${((estimateTokensFromChars(fullResponse.trim().length) / maxTokensForResponse) * 100).toFixed(1)}%` : 'N/A',
-        chunkCount,
-        continuationChunkCount,
-        // Length analysis
-        meetsMinimumLength: fullResponse.length >= 800, // Expected 2-4 paragraphs
-        meetsTargetLength: fullResponse.length >= 1200, // Target 300-500 words
-        endsWithPunctuation: /[.!?]\s*$/.test(fullResponse.trim()),
+    // PHASE 1: DIAGNOSTIC LOGGING - Completion and Truncation Metrics
+    const hadCompletion = continuationChunkCount > 0 || (finalResponse.length > fullResponse.length);
+    const truncationMetrics = {
+      discussionId,
+      persona: persona.name,
+      provider: persona.provider,
+      roundNumber,
+      hadCompletion,
+      completionAttempts: hadCompletion ? 1 : 0, // Will be updated by provider logs
+      isComplete,
+      responseLength: fullResponse.length,
+      responseTokens: countTokens(fullResponse),
+      estimatedTokens: estimateTokensFromChars(fullResponse.trim().length), // Use standardized token estimation
+      maxTokens: maxTokensForResponse,
+      tokenUtilization: maxTokensForResponse ? `${((estimateTokensFromChars(fullResponse.trim().length) / maxTokensForResponse) * 100).toFixed(1)}%` : 'N/A',
+      chunkCount,
+      continuationChunkCount,
+      // Length analysis
+      meetsMinimumLength: fullResponse.length >= 800, // Expected 2-4 paragraphs
+      meetsTargetLength: fullResponse.length >= 1200, // Target 300-500 words
+      endsWithPunctuation: /[.!?]\s*$/.test(fullResponse.trim()),
+      lastChars: fullResponse.slice(-100),
+      timestamp: new Date().toISOString(),
+    };
+
+    if (!isComplete) {
+      logger.error('🚨 CRITICAL: Final response still appears incomplete after completion attempts', {
+        ...truncationMetrics,
         lastChars: fullResponse.slice(-100),
-        timestamp: new Date().toISOString(),
-      };
-
-      if (!isComplete) {
-        logger.error('🚨 CRITICAL: Final response still appears incomplete after completion attempts', {
-          ...truncationMetrics,
-          lastChars: fullResponse.slice(-100),
-          note: 'Response may be truncated despite completion attempts',
-        });
-        // Don't return incomplete response - this should have been caught by provider
-        // But we'll return it with a warning since we can't retry here
-      } else if (hadCompletion) {
-        logger.info('✅ Response successfully completed after truncation detection', truncationMetrics);
-      } else {
-        logger.debug('Response completed without truncation', truncationMetrics);
-      }
+        note: 'Response may be truncated despite completion attempts',
+      });
+      // Don't return incomplete response - this should have been caught by provider
+      // But we'll return it with a warning since we can't retry here
+    } else if (hadCompletion) {
+      logger.info('✅ Response successfully completed after truncation detection', truncationMetrics);
+    } else {
+      logger.debug('Response completed without truncation', truncationMetrics);
+    }
   } catch (streamError) {
     // Log the error with context
     logger.error('Error during LLM streaming', {
@@ -3736,7 +3737,7 @@ export async function generateAIResponse(
   // Turn number calculation: (roundNumber - 1) * 3 + position
   // Round 1: Analyzer = 1, Solver = 2, Moderator = 3
   // Round 2: Analyzer = 4, Solver = 5, Moderator = 6
-  const message: import('@/types').ConversationMessage = {
+  const message: ConversationMessage = {
     discussion_id: discussionId,
     persona: persona.name as 'Solver AI' | 'Analyzer AI' | 'Moderator AI',
     content: finalContent, // CRITICAL FIX 1.2: Use finalResponse (via fullResponse) - only trim whitespace
@@ -3772,6 +3773,7 @@ export function setupSocketIO(io: Server) {
   setupSocketHandlers(io);
 }
 
-
 // Also export as default for backward compatibility
 export default setupSocketIO;
+}
+

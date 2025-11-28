@@ -15,8 +15,17 @@
     "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
     "no-unused-vars": ["error", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
     "react/no-unescaped-entities": "off",
-    "react/react-in-jsx-scope": "off"
+    "react/react-in-jsx-scope": "off",
+    "no-undef": "off"
   },
+  "overrides": [
+    {
+      "files": ["src/lib/logger.ts"],
+      "rules": {
+        "no-undef": "off"
+      }
+    }
+  ],
   "env": {
     "browser": true,
     "node": true,

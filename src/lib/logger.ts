@@ -7,7 +7,7 @@ const isDevelopment = process.env.NODE_ENV !== 'production';
  */
 const SENSITIVE_PATTERNS = [
   // API keys (common patterns)
-  /(api[_-]?key|apikey)\s*[:=]\s*["']?([a-zA-Z0-9_\-]{20,})["']?/gi,
+  /(api[_-]?key|apikey)\s*[:=]\s*["']?([a-zA-Z0-9_-]{20,})["']?/gi,
   /(secret|token|password|pwd|passwd)\s*[:=]\s*["']?([^\s"']{8,})["']?/gi,
   // Email addresses
   /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g,
@@ -35,7 +35,7 @@ export function sanitizeLogData(data: unknown): unknown {
     let sanitized = data;
     for (let i = 0; i < SENSITIVE_PATTERNS.length; i++) {
       const pattern = SENSITIVE_PATTERNS[i];
-      sanitized = sanitized.replace(pattern, (match) => {
+      sanitized = sanitized.replace(pattern, (_match) => {
         // Replace with redacted marker based on pattern type
         // Pattern index 2 is email addresses
         if (i === 2) {
