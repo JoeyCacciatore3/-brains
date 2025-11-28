@@ -211,7 +211,7 @@ async function writeDiscussionFilesAtomically(
         tempFiles.delete(tempFile); // Remove from tracking after successful cleanup
       } catch (cleanupError) {
         // File doesn't exist or cleanup failed - log but don't throw
-        if ((cleanupError as NodeJS.ErrnoException).code !== 'ENOENT') {
+        if ((cleanupError as { code?: string }).code !== 'ENOENT') {
           cleanupErrors.push({ file: tempFile, error: cleanupError });
         }
       }
@@ -484,7 +484,7 @@ export async function readDiscussion(
 
     return data;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+    if ((error as { code?: string }).code === 'ENOENT') {
       throw new Error(`Discussion not found: ${discussionId}`);
     }
     logger.error('Failed to read discussion', { error, discussionId, userId });
@@ -924,7 +924,7 @@ export async function getUserDiscussionIds(userId: string): Promise<string[]> {
 
     return discussionIds;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+    if ((error as { code?: string }).code === 'ENOENT') {
       return []; // User directory doesn't exist yet
     }
     logger.error('Failed to list user discussions', { error, userId });
@@ -950,12 +950,12 @@ export async function deleteDiscussionFiles(userId: string, discussionId: string
       // Delete both files, ignore errors if files don't exist
       await Promise.allSettled([
         fs.unlink(paths.json).catch((error) => {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          if ((error as { code?: string }).code !== 'ENOENT') {
             throw error;
           }
         }),
         fs.unlink(paths.md).catch((error) => {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          if ((error as { code?: string }).code !== 'ENOENT') {
             throw error;
           }
         }),

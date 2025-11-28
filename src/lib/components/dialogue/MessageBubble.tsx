@@ -34,7 +34,7 @@ export function MessageBubble({
   }
 
   // Type guard for DOMPurify instance
-  function isDOMPurifyInstance(obj: unknown): obj is DOMPurifyInstance {
+  function _isDOMPurifyInstance(obj: unknown): obj is DOMPurifyInstance {
     return (
       typeof obj === 'object' &&
       obj !== null &&

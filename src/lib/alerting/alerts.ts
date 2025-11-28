@@ -17,6 +17,7 @@ import path from 'path';
 const ALERTS_ENABLED = process.env.ALERTS_ENABLED !== 'false';
 const ALERT_ERROR_RATE_THRESHOLD = parseFloat(process.env.ALERT_ERROR_RATE_THRESHOLD || '0.05');
 // Note: ALERT_DISK_SPACE_THRESHOLD parsed but not used (kept for future disk space monitoring)
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const _ALERT_DISK_SPACE_THRESHOLD = parseFloat(process.env.ALERT_DISK_SPACE_THRESHOLD || '0.1');
 
 export interface Alert {

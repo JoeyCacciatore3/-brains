@@ -408,12 +408,7 @@ export function updateDiscussion(
     db.prepare(sql).run(...updateValues);
   });
 
-  try {
-    transaction();
-  } catch (error) {
-    // Transaction automatically rolls back on error
-    throw error;
-  }
+  transaction();
 }
 
 /**

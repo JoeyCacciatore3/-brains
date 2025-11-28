@@ -219,8 +219,8 @@ export function getRoundNumberFromTurnNumber(turnNumber: number): number {
  */
 export function filterRoundsForPersona(
   rounds: DiscussionRound[],
-  personaName: 'Analyzer AI' | 'Solver AI' | 'Moderator AI',
-  currentRoundNumber?: number
+  _personaName: 'Analyzer AI' | 'Solver AI' | 'Moderator AI',
+  _currentRoundNumber?: number
 ): DiscussionRound[] {
   // ALL LLMs see ALL rounds - no filtering based on persona
   // Execution order is enforced separately and does not affect context visibility

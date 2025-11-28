@@ -18,7 +18,7 @@ import {
   getNextPersona,
   type RoundStateContext,
 } from './round-processor';
-import { calculateTurnNumber, filterRoundsForPersona } from './round-utils';
+import { calculateTurnNumber } from './round-utils';
 
 export interface RoundConfig {
   io: Server;

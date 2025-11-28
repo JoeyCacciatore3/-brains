@@ -347,14 +347,14 @@ function formatFileInfo(files?: FileData[]): string {
  */
 function formatUserAnswersSection(
   userAnswers?: Record<string, string[]>,
-  rounds?: DiscussionRound[]
+  _rounds?: DiscussionRound[]
 ): string {
   if (!userAnswers || Object.keys(userAnswers).length === 0) {
     return '';
   }
 
   return `\n\n## User Input from Previous Questions\n${Object.entries(userAnswers)
-    .map(([questionId, selectedOptions]) => {
+    .map(([_questionId, selectedOptions]) => {
       return `- Selected: ${selectedOptions.join(', ')}`;
     })
     .join('\n')}\n\n---\n`;
