@@ -390,25 +390,7 @@ app.prepare().catch((error) => {
         const url = `http://${hostname}:${port}`;
         import('open').then((openModule) => {
           const open = openModule.default;
-          // Try to open Chrome specifically
-          // On Linux, try 'google-chrome' first, then 'chromium-browser' as fallback
-          return open(url, {
-            app: {
-              name: 'google-chrome',
-              arguments: ['--new-window'],
-            },
-          }).catch(() => {
-            // Fallback to chromium-browser if google-chrome is not available
-            return open(url, {
-              app: {
-                name: 'chromium-browser',
-                arguments: ['--new-window'],
-              },
-            });
-          }).catch(() => {
-            // Final fallback to default browser
-            return open(url);
-          });
+          return open(url);
         }).catch((err) => {
           // Log error but don't fail server startup if browser can't be opened
           logger.warn('Failed to open browser automatically', {
