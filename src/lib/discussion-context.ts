@@ -210,27 +210,21 @@ export async function loadDiscussionContext(
 
 /**
  * Format summary context section for prompts
+ * Simplified to prevent duplication - currentSummary should already be in summaries array
  */
 function formatSummaryContext(
   summaries?: SummaryEntry[],
   currentSummary?: SummaryEntry,
   legacySummary?: string
 ): string {
-  // CRITICAL: Include all summaries in chronological order
-  // If currentSummary exists, it should be in the summaries array, so we need to avoid duplication
-  // We'll include all summaries from the array, and only add currentSummary separately if it's not in the array
-  const summariesToInclude = summaries && summaries.length > 0
+  // Sort summaries by round number for chronological order
+  const sortedSummaries = summaries && summaries.length > 0
     ? summaries.sort((a, b) => a.roundNumber - b.roundNumber)
     : [];
 
-  // Check if currentSummary is already in the summaries array (it should be)
-  const currentSummaryInArray = currentSummary && summariesToInclude.some(
-    (s) => s.roundNumber === currentSummary.roundNumber && s.summary === currentSummary.summary
-  );
-
-  // Include all summaries from the array
-  const allSummariesSection = summariesToInclude.length > 0
-    ? `\n\n## Discussion History (Summarized)\n${summariesToInclude
+  // Include all summaries from the array (currentSummary should already be included)
+  const allSummariesSection = sortedSummaries.length > 0
+    ? `\n\n## Discussion History (Summarized)\n${sortedSummaries
         .map(
           (s, idx) =>
             `### Summary ${idx + 1} (Round ${s.roundNumber})\n` +
@@ -240,13 +234,11 @@ function formatSummaryContext(
         .join('\n\n---\n\n')}\n\n---\n`
     : '';
 
-  // Only include currentSummary separately if it's NOT already in the summaries array
-  // This prevents duplication while handling edge cases where currentSummary might not be in the array
-  const summaryToUse = currentSummary && !currentSummaryInArray
-    ? currentSummary.summary
-    : legacySummary;
-  const summarySection = summaryToUse
-    ? `\n\n## Discussion Summary (for context)\n${summaryToUse}\n\n---\n`
+  // Only include legacySummary if currentSummary exists but is not in summaries array
+  // (edge case: should not happen in normal flow, but handle gracefully)
+  const useLegacySummary = !currentSummary && legacySummary;
+  const summarySection = useLegacySummary
+    ? `\n\n## Discussion Summary (for context)\n${legacySummary}\n\n---\n`
     : '';
 
   return allSummariesSection + summarySection;

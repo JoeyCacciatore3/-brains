@@ -26,7 +26,6 @@ import {
   filterCompleteRounds,
   calculateTurnNumber,
   isRoundIncomplete,
-  filterRoundsForPersona,
 } from '@/lib/discussions/round-utils';
 import {
   EXECUTION_ORDER,
@@ -1500,11 +1499,8 @@ async function processSingleRound(
   // - Round will be persisted only after all three responses are complete
   const contextWithAnalyzer = {
     ...discussionContext,
-    rounds: filterRoundsForPersona(
-      [...(discussionContext.rounds || []), tempRoundForSolverContext],
-      'Solver AI',
-      currentRoundNumber
-    ),
+    // ALL LLMs see ALL rounds - filterRoundsForPersona is a no-op, so use rounds directly
+    rounds: [...(discussionContext.rounds || []), tempRoundForSolverContext],
   };
 
   // CRITICAL: Validate Analyzer response was generated before Solver
@@ -1695,11 +1691,8 @@ async function processSingleRound(
   // - Round will be persisted only after all three responses are complete
   const contextWithBoth = {
     ...discussionContext,
-    rounds: filterRoundsForPersona(
-      [...(discussionContext.rounds || []), tempRoundForModeratorContext],
-      'Moderator AI',
-      currentRoundNumber
-    ),
+    // ALL LLMs see ALL rounds - filterRoundsForPersona is a no-op, so use rounds directly
+    rounds: [...(discussionContext.rounds || []), tempRoundForModeratorContext],
   };
 
   // CRITICAL: Validate Solver response was generated before Moderator
@@ -2127,6 +2120,22 @@ async function checkAndGenerateAutoSummary(
         discussionId: discussionId,
         summary: summaryEntry,
       });
+
+      // Sync token count to database after summary creation
+      // Reload discussion context to get updated token count after summary
+      try {
+        const updatedDiscussionContext = await loadDiscussionContext(discussionId, userId);
+        syncTokenCountFromFile(discussionId, updatedDiscussionContext.tokenCount);
+        logger.debug('Token count synced to database after summary creation', {
+          discussionId,
+          tokenCount: updatedDiscussionContext.tokenCount,
+        });
+      } catch (syncError) {
+        logger.warn('Failed to sync token count to database after summary creation', {
+          error: syncError instanceof Error ? syncError.message : String(syncError),
+          discussionId,
+        });
+      }
 
       logger.info('Auto-summary generated for round', {
         discussionId,
@@ -3070,24 +3079,9 @@ export async function generateAIResponse(
   // Build messages for LLM
   const llmMessages: LLMMessage[] = [{ role: 'system', content: persona.systemPrompt }];
 
-  // CRITICAL FIX: Pre-filter rounds before passing to formatLLMPrompt
-  // This ensures consistent filtering and prevents context contamination
-  const filteredRounds = filterRoundsForPersona(
-    rounds,
-    persona.name as 'Analyzer AI' | 'Solver AI' | 'Moderator AI',
-    roundNumber
-  );
-
-  if (filteredRounds.length !== rounds.length) {
-    logger.info('🔍 Pre-filtering rounds for formatLLMPrompt', {
-      discussionId,
-      persona: persona.name,
-      roundNumber,
-      originalRoundsCount: rounds.length,
-      filteredRoundsCount: filteredRounds.length,
-      filteredOut: rounds.length - filteredRounds.length,
-    });
-  }
+  // ALL LLMs see ALL rounds - filterRoundsForPersona is a no-op, so use rounds directly
+  // Keeping variable name for clarity but it's the same as rounds
+  const filteredRounds = rounds;
 
   // Format conversation context
   // Use rounds if available (new structure), fallback to messages (legacy)
@@ -3781,4 +3775,3 @@ export function setupSocketIO(io: Server) {
 
 // Also export as default for backward compatibility
 export default setupSocketIO;
-}

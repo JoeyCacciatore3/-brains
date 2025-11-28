@@ -6,7 +6,7 @@
 import { logger } from '@/lib/logger';
 import { readDiscussion, getUserDiscussionIds } from './file-manager';
 import { getDiscussion, updateDiscussion, getAllDiscussions } from '@/lib/db/discussions';
-import { calculateDiscussionTokenCount, countTokens } from './token-counter';
+import { calculateDiscussionTokenCount } from './token-counter';
 
 interface ReconciliationResult {
   discussionId: string;
