@@ -62,9 +62,9 @@ export async function concurrentDiscussionsScenario(
  * Run high message rate scenario
  */
 export async function highMessageRateScenario(
-  messagesPerSecond: number,
-  durationSeconds: number,
-  baseUrl: string
+  _messagesPerSecond: number,
+  _durationSeconds: number,
+  _baseUrl: string
 ): Promise<LoadTestResult> {
   const startTime = Date.now();
   const latencies: number[] = [];
