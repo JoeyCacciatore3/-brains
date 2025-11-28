@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { RoundAccordion } from '@/lib/components/dialogue/RoundAccordion';
-import { createMockDiscussionRound } from '@/tests/utils/test-fixtures';
+import { createMockDiscussionRound } from '../../utils/test-fixtures';
 import type { SummaryEntry } from '@/types';
 
 describe('RoundAccordion Component', () => {

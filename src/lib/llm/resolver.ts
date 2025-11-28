@@ -299,6 +299,7 @@ function extractCombinedSolution(round: DiscussionRound): string | undefined {
       if (message.persona === 'Solver AI') score += 2;
       if (message.persona === 'Moderator AI') score += 1;
 
+      // eslint-disable-next-line no-constant-condition
       if (score > 0) {
         sentences.push({ text: sentence.trim(), score });
       }
