@@ -2,14 +2,13 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { logger } from '@/lib/logger';
-import type { ConversationMessage, DiscussionRound, SummaryEntry, QuestionSet } from '@/types';
+import type { DiscussionRound, SummaryEntry, QuestionSet } from '@/types';
 import {
   formatDiscussionJSON,
   formatDiscussionMarkdown,
   parseDiscussionJSON,
   type DiscussionData,
 } from './formatter';
-import { countTokens } from './token-counter';
 import { withLock } from './file-lock';
 import { backupDiscussion } from './backup-manager';
 import { BACKUP_CONFIG } from '@/lib/config';
@@ -38,21 +37,17 @@ const FILE_OPERATION_RETRY_CONFIG = {
 
 /**
  * Sleep utility for retry delays
+ * @param ms - Milliseconds to sleep
+ * @returns Promise that resolves after the specified delay
  */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
- * Retry a file operation with exponential backoff
- *
- * @param operation - Async function to retry
- * @param context - Context for logging (discussionId, userId, operation name)
- * @returns Result of the operation
- * @throws Error if all retries fail
- */
-/**
  * Categorize error as transient (retryable) or permanent (not retryable)
+ * @param error - Error to categorize
+ * @returns Object with isTransient flag and category string
  */
 function categorizeError(error: unknown): { isTransient: boolean; category: string } {
   if (!(error instanceof Error)) {
@@ -115,6 +110,14 @@ function categorizeError(error: unknown): { isTransient: boolean; category: stri
   return { isTransient: false, category: 'uncategorized' };
 }
 
+/**
+ * Retry a file operation with exponential backoff
+ *
+ * @param operation - Async function to retry
+ * @param context - Context for logging (discussionId, userId, operation name)
+ * @returns Result of the operation
+ * @throws Error if all retries fail
+ */
 async function retryFileOperation<T>(
   operation: () => Promise<T>,
   context: { discussionId?: string; userId?: string; operation: string }
@@ -285,6 +288,9 @@ async function writeDiscussionFilesAtomically(
 
 /**
  * Ensure discussions directory exists for a user
+ * @param userId - User ID
+ * @returns Path to the user's discussions directory
+ * @throws Error if directory creation fails
  */
 async function ensureUserDirectory(userId: string): Promise<string> {
   const userDir = path.join(DISCUSSIONS_DIR, userId);
@@ -300,6 +306,10 @@ async function ensureUserDirectory(userId: string): Promise<string> {
 /**
  * Get file paths for a discussion
  * Includes explicit path traversal validation for security
+ * @param userId - User ID
+ * @param discussionId - Discussion ID
+ * @returns Object with json and md file paths (absolute paths)
+ * @throws Error if path traversal is detected or paths are invalid
  */
 function getDiscussionPaths(userId: string, discussionId: string): { json: string; md: string } {
   // Validate userId and discussionId don't contain path traversal sequences
@@ -353,6 +363,12 @@ function getDiscussionPaths(userId: string, discussionId: string): { json: strin
  * - Database constraint: PRIMARY KEY on id (enforces uniqueness at DB level)
  * - File system structure: discussions stored per user directory (userId/discussionId.json)
  * - User ownership verified in readDiscussion() - ensures user-discussion relationship
+ *
+ * @param userId - User ID
+ * @param topic - Discussion topic
+ * @param discussionId - Optional discussion ID (if not provided, generates a new UUID)
+ * @returns Object with discussion id, jsonPath, and mdPath
+ * @throws Error if file creation fails
  */
 export async function createDiscussion(
   userId: string,
@@ -421,13 +437,15 @@ export async function createDiscussion(
 }
 
 /**
- * Read discussion data from JSON file
- */
-/**
  * Read discussion from JSON file
  * CRITICAL: This loads ALL rounds from the JSON file - the complete discussion history
  * The JSON file is the source of truth for LLM context and contains all previous rounds
  * The MD file is for user viewing/deletion in the browser
+ *
+ * @param discussionId - Discussion ID
+ * @param userId - User ID for ownership verification
+ * @returns Discussion data with all rounds loaded
+ * @throws Error if discussion not found or doesn't belong to user
  */
 export async function readDiscussion(
   discussionId: string,
@@ -493,52 +511,12 @@ export async function readDiscussion(
 }
 
 /**
- * Append a message to discussion files
- */
-export async function appendMessageToDiscussion(
-  discussionId: string,
-  userId: string,
-  message: ConversationMessage
-): Promise<{ tokenCount: number }> {
-  const data = await readDiscussion(discussionId, userId);
-
-  // Add message
-  if (!data.messages) {
-    data.messages = [];
-  }
-  data.messages.push(message);
-  data.updatedAt = Date.now();
-
-  // Calculate token count
-  const totalTokens = data.messages.reduce((sum, msg) => sum + countTokens(msg.content), 0);
-
-  const paths = getDiscussionPaths(userId, discussionId);
-
-  try {
-    const jsonContent = formatDiscussionJSON(data);
-    const mdContent = formatDiscussionMarkdown(data);
-
-    // Use atomic write with retry logic
-    await retryFileOperation(
-      () => writeDiscussionFilesAtomically(paths.json, paths.md, jsonContent, mdContent),
-      { discussionId, userId, operation: 'appendMessage' }
-    );
-
-    logger.debug('Message appended to discussion', {
-      discussionId,
-      userId,
-      messageId: message.id,
-      tokenCount: totalTokens,
-    });
-    return { tokenCount: totalTokens };
-  } catch (error) {
-    logger.error('Failed to append message to discussion', { error, discussionId, userId });
-    throw error;
-  }
-}
-
-/**
- * Update discussion with summary (legacy - kept for backward compatibility)
+ * Update discussion with summary (deprecated - use addSummaryToDiscussion instead)
+ * @deprecated Use addSummaryToDiscussion instead
+ * @param discussionId - Discussion ID
+ * @param userId - User ID
+ * @param summary - Summary text
+ * @throws Error if discussion not found or write fails
  */
 export async function updateDiscussionWithSummary(
   discussionId: string,
@@ -547,6 +525,23 @@ export async function updateDiscussionWithSummary(
 ): Promise<void> {
   const data = await readDiscussion(discussionId, userId);
 
+  // Create a summary entry for compatibility
+  const summaryEntry: SummaryEntry = {
+    summary,
+    createdAt: Date.now(),
+    roundNumber: data.currentRound || 1,
+    tokenCountBefore: 0,
+    tokenCountAfter: 0,
+    replacesRounds: [],
+  };
+
+  if (!data.summaries) {
+    data.summaries = [];
+  }
+  data.summaries.push(summaryEntry);
+  data.currentSummary = summaryEntry;
+
+  // Keep legacy fields for compatibility
   data.summary = summary;
   data.summaryCreatedAt = Date.now();
   data.updatedAt = Date.now();
@@ -573,6 +568,10 @@ export async function updateDiscussionWithSummary(
 /**
  * Add a round to discussion
  * Uses file locking to prevent concurrent modifications
+ * @param discussionId - Discussion ID
+ * @param userId - User ID
+ * @param round - Round data to add
+ * @throws Error if round validation fails, discussion not found, or write fails
  */
 export async function addRoundToDiscussion(
   discussionId: string,
@@ -730,6 +729,10 @@ export async function addRoundToDiscussion(
 /**
  * Add summary entry to discussion
  * Uses file locking to prevent concurrent modifications
+ * @param discussionId - Discussion ID
+ * @param userId - User ID
+ * @param summaryEntry - Summary entry to add
+ * @throws Error if discussion not found or write fails
  */
 export async function addSummaryToDiscussion(
   discussionId: string,
@@ -748,7 +751,7 @@ export async function addSummaryToDiscussion(
     data.summaries.push(summaryEntry);
     data.currentSummary = summaryEntry;
 
-    // Also update legacy summary fields for backward compatibility
+    // Keep legacy summary fields for compatibility (deprecated)
     data.summary = summaryEntry.summary;
     data.summaryCreatedAt = summaryEntry.createdAt;
 
@@ -782,6 +785,10 @@ export async function addSummaryToDiscussion(
 /**
  * Add question set to discussion
  * Uses file locking to prevent concurrent modifications
+ * @param discussionId - Discussion ID
+ * @param userId - User ID
+ * @param questionSet - Question set to add
+ * @throws Error if discussion not found or write fails
  */
 export async function addQuestionSetToDiscussion(
   discussionId: string,
@@ -838,6 +845,11 @@ export async function addQuestionSetToDiscussion(
 /**
  * Update user answers for a round's questions
  * Uses file locking and ensures atomic updates
+ * @param discussionId - Discussion ID
+ * @param userId - User ID
+ * @param roundNumber - Round number
+ * @param answers - Record mapping questionId to selected option IDs
+ * @throws Error if round not found, invalid question IDs, or write fails
  */
 export async function updateRoundAnswers(
   discussionId: string,
@@ -911,6 +923,9 @@ export async function updateRoundAnswers(
 
 /**
  * Get all discussion IDs for a user
+ * @param userId - User ID
+ * @returns Array of discussion IDs for the user
+ * @throws Error if directory read fails (returns empty array if directory doesn't exist)
  */
 export async function getUserDiscussionIds(userId: string): Promise<string[]> {
   const userDir = path.join(DISCUSSIONS_DIR, userId);
@@ -932,9 +947,6 @@ export async function getUserDiscussionIds(userId: string): Promise<string[]> {
   }
 }
 
-/**
- * Get discussion file paths (relative to discussions directory)
- */
 /**
  * Delete discussion files (JSON and Markdown)
  * Uses file locking to prevent race conditions
@@ -978,6 +990,12 @@ export async function deleteDiscussionFiles(userId: string, discussionId: string
   });
 }
 
+/**
+ * Get discussion file paths (relative to discussions directory)
+ * @param userId - User ID
+ * @param discussionId - Discussion ID
+ * @returns Object with json and md file paths relative to discussions directory
+ */
 export function getDiscussionFilePaths(
   userId: string,
   discussionId: string

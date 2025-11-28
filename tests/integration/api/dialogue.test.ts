@@ -4,7 +4,7 @@ import { createDiscussion, getDiscussion, updateDiscussion } from '@/lib/db/disc
 import { readDiscussion } from '@/lib/discussions/file-manager';
 import { initializeDatabase, closeDatabase } from '@/lib/db';
 import { isResolved, needsUserInput } from '@/lib/llm/resolver';
-// ConversationMessage type is used in type annotations
+// DiscussionMessage type is used in type annotations
 
 describe('Dialogue Integration Tests', () => {
   const testUserId = 'test-user-id';
@@ -103,8 +103,8 @@ describe('Dialogue Integration Tests', () => {
         fileResult.id
       );
 
-      // Messages are stored in files via appendMessageToDiscussion in real code
-      // For this test, we're just checking that messages can be retrieved from files
+      // Note: Legacy discussions may have messages array, but new discussions use rounds-based structure
+      // This test verifies that legacy data can still be read correctly
       const discussionData = await readDiscussion(discussion.id, testUserId);
       const messages = discussionData.messages || [];
 
@@ -138,7 +138,7 @@ describe('Dialogue Integration Tests', () => {
 
   describe('Resolution Detection', () => {
     it('should not resolve with less than 4 messages', () => {
-      const messages: ConversationMessage[] = [
+      const messages: DiscussionMessage[] = [
         {
           discussion_id: 'test',
           persona: 'Solver AI',
@@ -161,7 +161,7 @@ describe('Dialogue Integration Tests', () => {
     });
 
     it('should detect resolution with keywords', () => {
-      const messages: ConversationMessage[] = [
+      const messages: DiscussionMessage[] = [
         {
           discussion_id: 'test',
           persona: 'Solver AI',
@@ -200,7 +200,7 @@ describe('Dialogue Integration Tests', () => {
     });
 
     it('should detect when user input is needed', () => {
-      const messages: ConversationMessage[] = [
+      const messages: DiscussionMessage[] = [
         {
           discussion_id: 'test',
           persona: 'Solver AI',
@@ -218,7 +218,7 @@ describe('Dialogue Integration Tests', () => {
     });
 
     it('should not detect user input needed for user messages', () => {
-      const messages: ConversationMessage[] = [
+      const messages: DiscussionMessage[] = [
         {
           discussion_id: 'test',
           persona: 'User',

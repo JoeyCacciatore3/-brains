@@ -42,9 +42,6 @@ vi.mock('@/lib/discussions/file-manager', () => ({
     jsonPath: 'test.json',
     mdPath: 'test.md',
   })),
-  appendMessageToDiscussion: vi.fn(() => ({
-    tokenCount: 100,
-  })),
   addRoundToDiscussion: vi.fn(),
   readDiscussion: vi.fn(() => ({
     topic: 'Test topic',

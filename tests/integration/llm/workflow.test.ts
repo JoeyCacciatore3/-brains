@@ -18,7 +18,6 @@ vi.mock('@/lib/llm/index', async () => {
 // Mock file operations
 vi.mock('@/lib/discussions/file-manager', () => ({
   readDiscussion: vi.fn(),
-  appendMessageToDiscussion: vi.fn(),
   addRoundToDiscussion: vi.fn(),
   addSummaryToDiscussion: vi.fn(),
 }));
