@@ -1,8 +1,8 @@
 // getRedisClient not currently used but kept for future Redis-based rate limiting
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import { getRedisClient } from './db/redis';
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { logger } from './logger';
+/* eslint-enable @typescript-eslint/no-unused-vars */
 import { RATE_LIMIT_CONFIG, RATE_LIMIT_TIERS, type RateLimitTier } from './config';
 
 interface RateLimitEntry {

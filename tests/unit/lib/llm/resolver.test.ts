@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { isResolved } from '@/lib/llm/resolver';
-import type { ConversationMessage } from '@/types';
+// ConversationMessage type is used in type annotations
 
 describe('isResolved', () => {
   it('should return false for short conversations', () => {

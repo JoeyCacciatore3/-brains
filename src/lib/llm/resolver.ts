@@ -101,7 +101,6 @@ function checkMultiRoundConsensus(
   const consensusRounds: number[] = [];
 
   for (const round of roundsToCheck) {
-    // eslint-disable-next-line no-constant-condition
     if (checkThreePersonaAgreement(round)) {
       consensusRounds.push(round.roundNumber);
     }

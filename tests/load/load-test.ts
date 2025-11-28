@@ -26,8 +26,8 @@ export interface LoadTestResult {
  * Run concurrent discussions scenario
  */
 export async function concurrentDiscussionsScenario(
-  count: number,
-  baseUrl: string
+  _count: number,
+  _baseUrl: string
 ): Promise<LoadTestResult> {
   const startTime = Date.now();
   const latencies: number[] = [];

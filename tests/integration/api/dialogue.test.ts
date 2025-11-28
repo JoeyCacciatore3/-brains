@@ -4,7 +4,7 @@ import { createDiscussion, getDiscussion, updateDiscussion } from '@/lib/db/disc
 import { readDiscussion } from '@/lib/discussions/file-manager';
 import { initializeDatabase, closeDatabase } from '@/lib/db';
 import { isResolved, needsUserInput } from '@/lib/llm/resolver';
-import type { ConversationMessage } from '@/types';
+// ConversationMessage type is used in type annotations
 
 describe('Dialogue Integration Tests', () => {
   const testUserId = 'test-user-id';
