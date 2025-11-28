@@ -99,7 +99,7 @@ export async function highMessageRateScenario(
  * Run provider failure scenario
  */
 export async function providerFailureScenario(
-  baseUrl: string
+  _baseUrl: string
 ): Promise<LoadTestResult> {
   const startTime = Date.now();
   const latencies: number[] = [];

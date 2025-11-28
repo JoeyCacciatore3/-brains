@@ -6,7 +6,8 @@
 import { describe, it, expect } from 'vitest';
 import { calculateTurnNumber } from '@/lib/discussions/round-utils';
 import { formatLLMPrompt } from '@/lib/discussion-context';
-import type { DiscussionRound, ConversationMessage } from '@/types';
+import type { DiscussionRound } from '@/types';
+// ConversationMessage type is used in type annotations
 
 describe('Exchange Number Calculation', () => {
   describe('calculateTurnNumber', () => {
